@@ -4,7 +4,7 @@ from app.graph.workflow import workflow
 result = workflow.invoke(
     {
         "user_request": 
-        "Create a FastAPI authentication system",
+        "Create a Python calculator application",
 
         "plan": "",
         "code": "",

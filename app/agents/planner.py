@@ -1,12 +1,16 @@
 from langchain_google_genai import ChatGoogleGenerativeAI
 from app.models.state import AgentState
 from dotenv import load_dotenv
+import os
 
 load_dotenv()
 
+model = os.getenv('model')
+
+
 
 llm = ChatGoogleGenerativeAI(
-    model="gemini-2.5-flash",
+    model=model,
     temperature=0
 )
 

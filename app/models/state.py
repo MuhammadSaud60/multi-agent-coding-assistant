@@ -5,6 +5,8 @@ class AgentState(TypedDict):
 
     user_request: str
 
+    next_agent: str
+
     plan: str
 
     code: str
