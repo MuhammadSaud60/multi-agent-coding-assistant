@@ -1,4 +1,5 @@
 from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_ollama import ChatOllama
 from app.models.state import AgentState
 from dotenv import load_dotenv
 import os
@@ -7,8 +8,13 @@ load_dotenv()
 
 model = os.getenv('model')
 
-llm = ChatGoogleGenerativeAI(
-    model=model,
+# llm = ChatGoogleGenerativeAI(
+#     model=model,
+#     temperature=0
+# )
+
+llm = ChatOllama(
+    model='llama3.2:3b',
     temperature=0
 )
 

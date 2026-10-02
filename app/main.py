@@ -3,13 +3,26 @@ from app.graph.workflow import workflow
 
 result = workflow.invoke(
     {
-        "user_request": 
-        "Create a Python calculator application",
+        "user_request":
+        "create user authantication using python fastapi backend only.",
 
-        "plan": "",
-        "code": "",
-        "test_result": "",
-        "final_response": ""
+    "next_agent": "",
+
+    "plan": "",
+
+    "code": "",
+
+    "files_created": [],
+
+    "test_result": "",
+
+    "entrypoint": "",
+
+
+    "retry_count": 0,
+
+    "final_response": ""
+
     }
 )
 
