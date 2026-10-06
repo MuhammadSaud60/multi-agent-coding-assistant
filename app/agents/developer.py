@@ -1,8 +1,15 @@
 from pydantic import BaseModel, Field
 from langchain_ollama import ChatOllama
 
-from app.models.state import AgentState
-from app.tools.file_tools import create_file
+from models.state import AgentState
+from tools.workspace_tools import (
+    list_files,
+    read_file,
+    create_file,
+    update_file,
+    delete_file,
+)
+from tools.project_tools import validate_python_filename
 
 
 class GeneratedFile(BaseModel):
@@ -49,32 +56,45 @@ def developer_agent(state: AgentState):
     plan = state.get("plan", "")
 
     prompt = f"""
-You are a senior software developer.
+    You are a senior software developer.
 
-User request:
-{request}
+    User request:
+    {request}
 
-Development plan:
-{plan}
+    Development plan:
+    {plan}
 
-Create every file required to complete the task.
+    Create every file required to complete the task.
 
-Rules:
-- Return complete working file contents.
-- Use relative file paths.
-- Do not use markdown code fences.
-- Do not only describe the code.
-- Actually provide the complete contents of every required file.
-- Choose the correct project entrypoint dynamically.
-- The entrypoint must be a file that can be executed to test the project.
-- Do not invent an entrypoint that does not exist.
-"""
+    Rules:
+    - Return complete working file contents.
+    - Use relative file paths.
+    - Do not use markdown code fences.
+    - Do not only describe the code.
+    - Actually provide the complete contents of every required file.
+    - Choose the correct project entrypoint dynamically.
+    - The entrypoint must be a file that can be executed to test the project.
+    - Do not invent an entrypoint that does not exist.
+    """
 
     result = structured_llm.invoke(prompt)
 
     files_created = []
 
     for file in result.files:
+
+        validation_error = validate_python_filename(file.path)
+
+        if validation_error:
+            print(
+                f"[DEVELOPER] Unsafe filename detected: {file.path}"
+            )
+
+            print(
+                f"[DEVELOPER] {validation_error}"
+            )
+
+            raise ValueError(validation_error)
 
         print(
             f"[DEVELOPER] Creating file: {file.path}"
@@ -93,9 +113,9 @@ Rules:
 
         files_created.append(file.path)
 
-    print(
-        f"[DEVELOPER] Entrypoint: {result.entrypoint}"
-    )
+        print(
+            f"[DEVELOPER] Entrypoint: {result.entrypoint}"
+        )
 
     return {
         "code": result.model_dump_json(),

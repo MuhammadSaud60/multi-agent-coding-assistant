@@ -1,11 +1,21 @@
 from langchain_ollama import ChatOllama
 from langchain.agents import create_agent
 
-from app.models.state import AgentState
-from app.tools.file_tools import (
+from models.state import AgentState
+from tools.file_tools import (
     read_file,
     update_file,
 )
+
+from tools.workspace_tools import (
+    list_files,
+    read_file,
+    create_file,
+    update_file,
+    delete_file,
+)
+
+from tools.command_tools import run_command
 
 
 llm = ChatOllama(
@@ -15,8 +25,13 @@ llm = ChatOllama(
 
 
 tools = [
+    list_files,
     read_file,
+    create_file,
     update_file,
+    delete_file,
+    run_command,
+
 ]
 
 

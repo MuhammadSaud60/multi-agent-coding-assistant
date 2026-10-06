@@ -1,4 +1,4 @@
-from app.graph.workflow import workflow
+from graph.workflow import workflow
 
 
 result = workflow.invoke(

@@ -1,6 +1,6 @@
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_ollama import ChatOllama  # local
-from app.models.state import AgentState
+from models.state import AgentState
 from dotenv import load_dotenv
 import os
 

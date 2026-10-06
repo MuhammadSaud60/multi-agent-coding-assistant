@@ -1,7 +1,7 @@
 from pathlib import Path
 import subprocess
 
-from app.models.state import AgentState
+from models.state import AgentState
 
 
 PROJECT_DIR = Path("generated_project")
@@ -31,7 +31,7 @@ def tester_agent(state: AgentState):
     python_files = [
         file
         for file in files
-        if file.endswith(".py")
+        
     ]
 
     print(

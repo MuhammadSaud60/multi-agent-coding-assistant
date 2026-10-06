@@ -1,12 +1,12 @@
 from langgraph.graph import StateGraph, END
 
-from app.models.state import AgentState
+from models.state import AgentState
 
-from app.agents.supervisor import supervisor_agent
-from app.agents.planner import planner_agent
-from app.agents.developer import developer_agent
-from app.agents.tester import tester_agent
-from app.agents.debugger import debugger_agent
+from agents.supervisor import supervisor_agent
+from agents.planner import planner_agent
+from agents.developer import developer_agent
+from agents.tester import tester_agent
+from agents.debugger import debugger_agent
 
 
 graph = StateGraph(AgentState)
