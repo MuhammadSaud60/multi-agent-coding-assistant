@@ -21,6 +21,21 @@ All file access goes through one safe, path-checked workspace API
 (`app/tools/workspace_tools.py`) and one allow-listed command runner
 (`app/tools/command_tools.py`).
 
+## Quick start (one command)
+
+Windows: double-click `run.bat`. Linux, Mac or Codespaces: `./run.sh`.
+The first run creates the Python environment and installs everything, then
+the GUI opens at http://127.0.0.1:8765
+
+Prefer the terminal? From the project root:
+
+    python run.py                          # the GUI
+    python run.py "make a calculator app"  # the agents, in the terminal
+
+Model settings live in a file named `.env` in the project root (copy
+`.env.example` to get started). The program reads that file no matter
+which folder you start it from.
+
 ## Setup
 
 ```bash

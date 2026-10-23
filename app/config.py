@@ -30,7 +30,11 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-load_dotenv()
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+
+# Always read the .env that sits in the project root, no matter which
+# folder the program is started from.
+load_dotenv(PROJECT_ROOT / ".env")
 
 
 def _sanitize_proxy_env() -> None:
@@ -55,8 +59,6 @@ def _sanitize_proxy_env() -> None:
 
 
 _sanitize_proxy_env()
-
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 DEFAULT_MODELS = {
     "ollama": "llama3.2:3b",
