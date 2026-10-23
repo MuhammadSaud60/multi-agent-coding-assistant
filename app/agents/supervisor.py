@@ -1,4 +1,5 @@
 from app.config import get_llm
+from app.intent import is_test_only_request
 from app.models.state import AgentState
 from app.text_utils import to_text
 
@@ -8,6 +9,17 @@ llm = get_llm("supervisor")
 def supervisor_agent(state: AgentState):
 
     request = state["user_request"]
+
+    # A run/test-only request ("run the code") targets the project
+    # that is already in the workspace. Sending it to the planner or
+    # developer would regenerate code and destroy that project, so it
+    # is routed straight to the tester without asking the model.
+    if is_test_only_request(request):
+        print("[SUPERVISOR] Run/test-only request -> tester (existing workspace)")
+        return {
+            "next_agent": "tester",
+            "test_only": True,
+        }
 
     prompt = f"""
 
@@ -52,5 +64,6 @@ def supervisor_agent(state: AgentState):
         decision = "planner"
 
     return {
-        "next_agent": decision
+        "next_agent": decision,
+        "test_only": False,
     }

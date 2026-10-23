@@ -24,7 +24,7 @@ Scenarios:
   3. smoke   The existing hello-world smoke test still passes
              (scripts/smoke_test.py, run as a subprocess).
   4. tworuns Two CLI runs share one workspace; the second run must not
-             leave the first run's files behind.
+             leave the first run's files behind in the workspace.
   5. gui     A GUI RunManager run also clears the workspace first and
              emits the "Workspace cleared" log event.
   6. entryfix_web
@@ -45,6 +45,21 @@ Scenarios:
              blocks, and the developer payload's index.html content
              is a list of lines). The run must complete with no
              AttributeError and produce the web files.
+ 10. runexisting
+             A workspace pre-populated with a valid Python project,
+             then the request "run the code": the tester must run the
+             EXISTING project (files byte-for-byte unchanged, known
+             output reported) and the developer must never run. The
+             fake developer payload is a distinctive marker file, so
+             any regeneration is caught.
+ 11. runexisting_web
+             Same as 10, but the existing project is a website: the
+             tester validates it instead of executing anything, and
+             the files stay untouched.
+ 12. backup  A normal build run over a workspace that already holds a
+             project: the old file must be MOVED into a timestamped
+             backup folder next to the workspace (never deleted), and
+             the CLI output must say where it went.
 
 Usage (from the project root):
 
@@ -176,6 +191,48 @@ ENTRYFIX_EMPTY_PAYLOAD = {
     "files": [],
     "entrypoint": "main.py",
 }
+
+# Payload for the run-existing scenarios. If the developer runs at
+# all for a "run the code" request, this unmistakable file appears in
+# the workspace and the scenario fails.
+DEVELOPER_MARKER_PAYLOAD = {
+    "files": [
+        {
+            "path": "developer_was_here.py",
+            "content": "print('the developer regenerated the project')\n",
+        },
+    ],
+    "entrypoint": "developer_was_here.py",
+}
+
+# The pre-existing Python project for scenario runexisting.
+EXISTING_MAIN_PY = (
+    '"""Pre-existing project: must survive a run-only request."""\n'
+    "\n"
+    "from helper import MESSAGE\n"
+    "\n"
+    "print(MESSAGE)\n"
+    'print("existing project ran OK")\n'
+)
+
+EXISTING_HELPER_PY = 'MESSAGE = "hello from the existing project"\n'
+
+# The pre-existing website for scenario runexisting_web.
+EXISTING_INDEX_HTML = (
+    "<!DOCTYPE html>\n"
+    '<html lang="en">\n'
+    "<head>\n"
+    '<meta charset="utf-8">\n'
+    "<title>Existing Site</title>\n"
+    '<link rel="stylesheet" href="styles.css">\n'
+    "</head>\n"
+    "<body>\n"
+    "<h1>Existing website</h1>\n"
+    '<script src="script.js"></script>\n'
+    "</body>\n"
+    "</html>\n"
+)
+
 
 # Saud's "three boxes" request. The index.html content is deliberately
 # a LIST of lines, the shape small models sometimes return for a
@@ -470,6 +527,95 @@ def scenario_listcontent() -> list[str]:
     return failures
 
 
+def _snapshot(workspace: Path) -> dict[str, str]:
+    """Map of workspace-relative path -> content, caches excluded.
+
+    Running a Python entrypoint legitimately creates __pycache__, so
+    byte-for-byte comparisons of the project itself ignore it.
+    """
+
+    snapshot = {}
+
+    for path in sorted(workspace.rglob("*")):
+        if path.is_file() and "__pycache__" not in path.parts:
+            snapshot[path.relative_to(workspace).as_posix()] = path.read_text(
+                encoding="utf-8"
+            )
+
+    return snapshot
+
+
+def scenario_runexisting() -> list[str]:
+    from app.graph.workflow import workflow
+    from app.main import build_initial_state
+
+    workspace = Path(os.environ["MACA_WORKSPACE"])
+    workspace.mkdir(parents=True, exist_ok=True)
+    (workspace / "main.py").write_text(EXISTING_MAIN_PY, encoding="utf-8")
+    (workspace / "helper.py").write_text(EXISTING_HELPER_PY, encoding="utf-8")
+    before = _snapshot(workspace)
+
+    result = workflow.invoke(build_initial_state("run the code"))
+    test_result = result.get("test_result", "")
+
+    failures = []
+    if result.get("test_only") is not True:
+        failures.append(f"run not flagged test_only: {result.get('test_only')!r}")
+    if not test_result.startswith("STATUS: PASSED"):
+        failures.append(f"expected PASSED, got:\n{test_result}")
+    if "hello from the existing project" not in test_result:
+        failures.append("existing project's output missing from the result")
+    if "existing project ran OK" not in test_result:
+        failures.append("existing main.py did not run to completion")
+    if (workspace / "developer_was_here.py").exists():
+        failures.append("the developer ran and regenerated the project")
+    if "developer_was_here.py" in (result.get("files_created") or []):
+        failures.append("files_created names the developer's marker file")
+    after = _snapshot(workspace)
+    if after != before:
+        failures.append(
+            f"existing files changed by a run-only request:\n"
+            f"before={sorted(before)} after={sorted(after)}"
+        )
+    return failures
+
+
+def scenario_runexisting_web() -> list[str]:
+    from app.graph.workflow import workflow
+    from app.main import build_initial_state
+
+    workspace = Path(os.environ["MACA_WORKSPACE"])
+    workspace.mkdir(parents=True, exist_ok=True)
+    (workspace / "index.html").write_text(EXISTING_INDEX_HTML, encoding="utf-8")
+    (workspace / "styles.css").write_text(
+        "body { font-family: sans-serif; }\n", encoding="utf-8"
+    )
+    (workspace / "script.js").write_text(
+        "console.log('existing site');\n", encoding="utf-8"
+    )
+    before = _snapshot(workspace)
+
+    result = workflow.invoke(build_initial_state("run the code"))
+    test_result = result.get("test_result", "")
+
+    failures = []
+    if result.get("test_only") is not True:
+        failures.append(f"run not flagged test_only: {result.get('test_only')!r}")
+    if not test_result.startswith("STATUS: PASSED"):
+        failures.append(f"expected PASSED, got:\n{test_result}")
+    if "not executed" not in test_result.lower():
+        failures.append("web project was executed instead of validated")
+    if (workspace / "developer_was_here.py").exists():
+        failures.append("the developer ran and regenerated the project")
+    after = _snapshot(workspace)
+    if after != before:
+        failures.append(
+            f"existing files changed by a run-only request:\n"
+            f"before={sorted(before)} after={sorted(after)}"
+        )
+    return failures
+
+
 SCENARIOS = {
     "web": scenario_web,
     "blocked": scenario_blocked,
@@ -478,6 +624,8 @@ SCENARIOS = {
     "entryfix_missing": scenario_entryfix_missing,
     "entryfix_empty": scenario_entryfix_empty,
     "listcontent": scenario_listcontent,
+    "runexisting": scenario_runexisting,
+    "runexisting_web": scenario_runexisting_web,
 }
 
 
@@ -533,6 +681,8 @@ def main() -> int:
         ("entryfix_missing", ENTRYFIX_MISSING_PAYLOAD),
         ("entryfix_empty", ENTRYFIX_EMPTY_PAYLOAD),
         ("listcontent", LISTCONTENT_PAYLOAD),
+        ("runexisting", DEVELOPER_MARKER_PAYLOAD),
+        ("runexisting_web", DEVELOPER_MARKER_PAYLOAD),
     ):
         workspace = tempfile.mkdtemp(prefix=f"maca-{name}-")
         proc = _run_subprocess(
@@ -577,6 +727,58 @@ def main() -> int:
     for line in detail:
         print(line)
     results["tworuns"] = tworuns_ok
+
+    # 12: a build run over an occupied workspace archives the old
+    # project into a timestamped backup folder instead of deleting it.
+    workspace = tempfile.mkdtemp(prefix="maca-backup-")
+    ws_path = Path(workspace)
+    (ws_path / "old_project.py").write_text(
+        "print('old project')\n", encoding="utf-8"
+    )
+    proc = _run_subprocess(
+        [PY, "-m", "app.main", "create a second script"],
+        _base_env(workspace, SECOND_PAYLOAD),
+    )
+    backup_ok = proc.returncode == 0 and "STATUS: PASSED" in proc.stdout
+    detail = []
+    if not backup_ok:
+        detail.append(
+            f"CLI build run failed:\n{proc.stdout[-1500:]}\n{proc.stderr[-1500:]}"
+        )
+    else:
+        if (ws_path / "old_project.py").exists():
+            backup_ok = False
+            detail.append("old_project.py still sits in the workspace")
+        backup_root = ws_path.parent / f"{ws_path.name}_backups"
+        archived = (
+            sorted(backup_root.glob("*/old_project.py"))
+            if backup_root.is_dir()
+            else []
+        )
+        if not archived:
+            backup_ok = False
+            detail.append(
+                f"old_project.py was not archived under {backup_root} "
+                "(it must be moved, never deleted)"
+            )
+        else:
+            detail.append(f"old_project.py archived at {archived[0]}")
+            content = archived[0].read_text(encoding="utf-8")
+            if content != "print('old project')\n":
+                backup_ok = False
+                detail.append("archived old_project.py content changed")
+        if "moved to backup" not in proc.stdout:
+            backup_ok = False
+            detail.append(
+                "CLI output does not say where the previous project went"
+            )
+        if not (ws_path / "second.py").is_file():
+            backup_ok = False
+            detail.append("second.py missing after its build run")
+    print(f"\n===== scenario 'backup': {'PASSED' if backup_ok else 'FAILED'} =====")
+    for line in detail:
+        print(line)
+    results["backup"] = backup_ok
 
     print("\n================ SUMMARY ================")
     for name, ok in results.items():

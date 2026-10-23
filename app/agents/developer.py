@@ -182,6 +182,12 @@ def _developer_agent_impl(state: AgentState):
 
     Rules:
     - Return complete working file contents.
+    - Write every file properly formatted: real newlines and
+      indentation, exactly as a human would save it. NEVER compress
+      code onto a single line. This matters most for Python, where a
+      function definition, its body and the if __name__ == "__main__":
+      guard each belong on their own lines; HTML, CSS and JavaScript
+      must likewise be spread over readable lines.
     - Use relative file paths.
     - Do not use markdown code fences.
     - Do not only describe the code.

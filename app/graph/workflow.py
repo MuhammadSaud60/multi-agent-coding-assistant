@@ -56,6 +56,14 @@ def test_router(state):
         print("\n[GRAPH] TEST BLOCKED → END (never retried)")
         return "finish"
 
+    if state.get("test_only"):
+        # A run/test-only request reports the existing project's result
+        # as-is. The debugger exists to fix code the developer just
+        # wrote; it must never rewrite the user's existing project
+        # unasked, so the run ends here whatever the outcome was.
+        print("\n[GRAPH] TEST-ONLY RUN → END")
+        return "finish"
+
     if result.startswith("STATUS: PASSED"):
         print("\n[GRAPH] TEST PASSED → END")
         return "finish"
@@ -78,7 +86,10 @@ graph.add_conditional_edges(
     router,
     {
         "planner": "planner",
-        "developer": "developer"
+        "developer": "developer",
+        # Run/test-only requests skip generation entirely and exercise
+        # the project already sitting in the workspace.
+        "tester": "tester"
     }
 )
 

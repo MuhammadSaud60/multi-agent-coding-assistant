@@ -49,6 +49,87 @@ def _result(text: str) -> dict:
     }
 
 
+# Directories that never hold project source worth running: caches,
+# VCS metadata and virtual environments.
+_SKIP_DIR_NAMES = {
+    "__pycache__",
+    ".git",
+    ".venv",
+    "venv",
+    "node_modules",
+}
+
+# File basenames that conventionally mark a runnable Python entrypoint.
+_PYTHON_ENTRYPOINT_NAMES = {"main.py", "app.py", "index.py", "run.py", "__main__.py"}
+
+
+def _scan_workspace() -> list[str]:
+    """List the project files currently in the workspace.
+
+    Used by run/test-only requests, where no developer produced a file
+    list: the tester works from what is actually on disk. Returns
+    workspace-relative paths with forward slashes, sorted.
+    """
+
+    if not PROJECT_DIR.is_dir():
+        return []
+
+    found = []
+
+    for path in PROJECT_DIR.rglob("*"):
+
+        if not path.is_file():
+            continue
+
+        parts = path.relative_to(PROJECT_DIR).parts
+
+        if any(
+            part in _SKIP_DIR_NAMES or part.startswith(".")
+            for part in parts[:-1]
+        ):
+            continue
+
+        found.append("/".join(parts))
+
+    return sorted(found)
+
+
+def _pick_workspace_entrypoint(files: list[str]) -> str | None:
+    """Pick the entrypoint of an existing workspace project.
+
+    Mirrors the developer's rules: an HTML file means a web project
+    (index.html preferred), otherwise a single conventional Python
+    entrypoint (or a single Python file at all) runs. Returns None
+    when there is no clear entrypoint.
+    """
+
+    html_files = [
+        path for path in files if path.lower().endswith((".html", ".htm"))
+    ]
+
+    if html_files:
+        for candidate in html_files:
+            if candidate.rsplit("/", 1)[-1] == "index.html":
+                return candidate
+        return html_files[0]
+
+    python_files = [path for path in files if path.lower().endswith(".py")]
+
+    conventional = [
+        path
+        for path in python_files
+        if path.rsplit("/", 1)[-1] in _PYTHON_ENTRYPOINT_NAMES
+    ]
+
+    if len(conventional) == 1:
+        return conventional[0]
+
+    if not conventional and len(python_files) == 1:
+        return python_files[0]
+
+    return None
+
+
 def _scan_for_destructive_ops(files: list[str]) -> list[str]:
     """Return one 'file: pattern' string per destructive operation found."""
 
@@ -227,13 +308,40 @@ def _run_tester(state: AgentState):
     files = state.get("files_created", [])
     entrypoint = state.get("entrypoint", "")
 
-    if not files:
-        print("[TESTER] No files were created.")
+    scanned = False
 
-        return _result(
-            "STATUS: FAILED\n"
-            "REASON: No project files were created."
+    if not files:
+        # No developer ran (a run/test-only request): test the project
+        # that already sits in the workspace instead of failing.
+        files = _scan_workspace()
+        scanned = True
+
+        if not files:
+            print("[TESTER] The workspace is empty.")
+
+            return _result(
+                "STATUS: FAILED\n"
+                "REASON: There is no project in the workspace to run: "
+                "the workspace is empty. Build something first, then "
+                "ask to run it."
+            )
+
+        entrypoint = _pick_workspace_entrypoint(files) or ""
+
+        print(
+            f"[TESTER] Found {len(files)} existing file(s) in the "
+            f"workspace; entrypoint: {entrypoint or '(none)'}"
         )
+
+        if not entrypoint:
+            return _result(
+                "STATUS: FAILED\n"
+                "REASON: Found an existing project in the workspace "
+                "but could not tell which file starts it, so nothing "
+                "was run.\n"
+                "FILES FOUND:\n"
+                + "\n".join(f"- {name}" for name in files)
+            )
 
     if not entrypoint:
         return _result(
@@ -288,18 +396,28 @@ def _run_tester(state: AgentState):
     suffix = entrypoint_path.suffix.lower()
 
     if suffix == ".py":
-        return _run_python_entrypoint(files, entrypoint)
+        result = _run_python_entrypoint(files, entrypoint)
+    elif suffix in (".html", ".htm"):
+        result = _validate_html_entrypoint(entrypoint)
+    else:
+        result = _result(
+            "STATUS: FAILED\n"
+            f"ENTRYPOINT: {entrypoint}\n"
+            f"REASON: Projects with a '{suffix}' entrypoint cannot be "
+            "tested yet. The tester can run Python (.py) entrypoints and "
+            "validate HTML (.html) entrypoints; this project was not run."
+        )
 
-    if suffix in (".html", ".htm"):
-        return _validate_html_entrypoint(entrypoint)
+    if scanned:
+        # A workspace scan found these files; surface them so the CLI
+        # and GUI can show what was actually run.
+        result = {
+            **result,
+            "files_created": files,
+            "entrypoint": entrypoint,
+        }
 
-    return _result(
-        "STATUS: FAILED\n"
-        f"ENTRYPOINT: {entrypoint}\n"
-        f"REASON: Projects with a '{suffix}' entrypoint cannot be "
-        "tested yet. The tester can run Python (.py) entrypoints and "
-        "validate HTML (.html) entrypoints; this project was not run."
-    )
+    return result
 
 
 def tester_agent(state: AgentState):

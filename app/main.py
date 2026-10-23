@@ -13,6 +13,7 @@ import sys
 
 from app.config import get_workspace_root
 from app.graph.workflow import workflow
+from app.intent import is_test_only_request
 from app.tools.workspace_tools import clear_workspace
 
 
@@ -31,6 +32,7 @@ def build_initial_state(user_request: str) -> dict:
         "test_result": "",
         "retry_count": 0,
         "next_agent": "",
+        "test_only": is_test_only_request(user_request),
         "final_response": "",
     }
 
@@ -65,10 +67,29 @@ def main(argv: list[str] | None = None) -> int:
 
     print(f"\n[MAIN] Workspace: {get_workspace_root()}")
 
-    # The workspace is a scratch output area: start every run empty so
-    # files from previous runs cannot pollute this one.
-    removed = clear_workspace()
-    print(f"[MAIN] Cleared workspace for the new run ({removed} item(s) removed).")
+    if is_test_only_request(user_request):
+        # Run/test-only: the existing workspace IS the subject of the
+        # request. It is kept exactly as it is.
+        print(
+            "[MAIN] Run/test-only request: keeping the existing "
+            "workspace as-is (nothing cleared)."
+        )
+    else:
+        # Start every build run from an empty workspace so files from
+        # previous runs cannot pollute this one. The previous project
+        # is not deleted: it is moved to a timestamped backup folder.
+        cleared = clear_workspace()
+        if cleared.backup_dir is not None:
+            print(
+                f"[MAIN] Cleared workspace for the new run "
+                f"({cleared.moved} item(s) moved to backup: "
+                f"{cleared.backup_dir})."
+            )
+        else:
+            print(
+                "[MAIN] Cleared workspace for the new run "
+                "(workspace was already empty)."
+            )
 
     print(f"[MAIN] Request: {user_request}")
 

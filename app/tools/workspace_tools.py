@@ -7,7 +7,9 @@ a standard-library module are rejected on create.
 """
 
 import shutil
+from datetime import datetime
 from pathlib import Path
+from typing import NamedTuple
 
 from langchain_core.tools import tool
 
@@ -15,6 +17,26 @@ from app.config import get_workspace_root
 from app.tools.project_tools import validate_python_filename
 
 PROJECT_DIR = get_workspace_root()
+
+
+class ClearResult(NamedTuple):
+    """Outcome of a run-start workspace clear."""
+
+    moved: int
+    backup_dir: Path | None
+
+
+def get_backup_root() -> Path:
+    """Where previous projects are archived: a sibling of the workspace.
+
+    For the default workspace this is
+    <project root>/generated_project_backups. It deliberately lives
+    OUTSIDE the workspace root, so the file APIs (which only ever look
+    inside the workspace) never list backups as project files, and a
+    later clear can never delete an earlier backup.
+    """
+
+    return PROJECT_DIR.parent / f"{PROJECT_DIR.name}_backups"
 
 
 def safe_path(relative_path: str) -> Path:
@@ -34,25 +56,53 @@ def safe_path(relative_path: str) -> Path:
     return target
 
 
-def clear_workspace() -> int:
+def clear_workspace() -> ClearResult:
     """
-    Remove every file and folder inside the workspace root, keeping the
-    root folder itself.
+    Empty the workspace root for a new run WITHOUT deleting anything.
 
-    The workspace is a scratch output area: each new run starts from an
-    empty workspace so files from previous runs cannot pollute it. The
-    same path-safety rule as safe_path applies: a child is only removed
-    after resolving it and confirming it still lives inside the
-    workspace root, so nothing outside the root can ever be deleted.
+    Each new run starts from an empty workspace so files from previous
+    runs cannot pollute it, but the previous project's files are the
+    user's work: instead of being deleted they are MOVED into a
+    timestamped folder under get_backup_root(), outside the workspace,
+    so a run can never silently destroy the project before it.
 
-    Returns the number of top-level items removed.
+    The same path-safety rule as safe_path applies: a child is only
+    moved after resolving it and confirming it still lives inside the
+    workspace root, so nothing outside the root can ever be touched.
+    A symlink is moved as a link, never followed.
+
+    Returns a ClearResult: how many top-level items were moved, and
+    the backup folder they went to (None when the workspace was
+    already empty).
     """
 
     PROJECT_DIR.mkdir(parents=True, exist_ok=True)
 
-    removed = 0
+    children = list(PROJECT_DIR.iterdir())
 
-    for child in PROJECT_DIR.iterdir():
+    if not children:
+        return ClearResult(moved=0, backup_dir=None)
+
+    backup_root = get_backup_root()
+    backup_root.mkdir(parents=True, exist_ok=True)
+
+    stamp = datetime.now().strftime("%Y-%m-%d_%H%M%S")
+    backup_dir = backup_root / stamp
+    suffix = 2
+    while backup_dir.exists():
+        backup_dir = backup_root / f"{stamp}-{suffix}"
+        suffix += 1
+    backup_dir.mkdir(parents=True)
+
+    moved = 0
+
+    for child in children:
+
+        if child.is_symlink():
+            # Move the link itself; never follow it outside the root.
+            shutil.move(str(child), str(backup_dir / child.name))
+            moved += 1
+            continue
 
         resolved = child.resolve()
 
@@ -64,16 +114,17 @@ def clear_workspace() -> int:
             )
             continue
 
-        if child.is_symlink():
-            child.unlink()
-        elif resolved.is_dir():
-            shutil.rmtree(resolved)
-        else:
-            resolved.unlink()
+        shutil.move(str(resolved), str(backup_dir / child.name))
 
-        removed += 1
+        moved += 1
 
-    return removed
+    if moved == 0:
+        # Nothing was safe to move; do not leave an empty backup
+        # folder behind as a false promise.
+        backup_dir.rmdir()
+        return ClearResult(moved=0, backup_dir=None)
+
+    return ClearResult(moved=moved, backup_dir=backup_dir)
 
 
 @tool

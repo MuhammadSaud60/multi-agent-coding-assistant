@@ -27,4 +27,6 @@ class AgentState(TypedDict):
 
     next_agent: str
 
+    test_only: bool
+
     final_response: str
