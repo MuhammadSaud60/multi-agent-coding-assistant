@@ -23,6 +23,7 @@ def build_initial_state(user_request: str) -> dict:
         "plan": "",
         "files_created": [],
         "entrypoint": "",
+        "entrypoint_note": "",
         "test_command": "",
         "working_directory": str(get_workspace_root()),
         "language": "python",

@@ -220,7 +220,7 @@ def _run_python_entrypoint(files: list[str], entrypoint: str) -> dict:
     )
 
 
-def tester_agent(state: AgentState):
+def _run_tester(state: AgentState):
 
     print("\n[TESTER] Starting project validation...")
 
@@ -236,7 +236,6 @@ def tester_agent(state: AgentState):
         )
 
     if not entrypoint:
-
         return _result(
             "STATUS: FAILED\n"
             "REASON: No entrypoint was provided."
@@ -301,3 +300,26 @@ def tester_agent(state: AgentState):
         "tested yet. The tester can run Python (.py) entrypoints and "
         "validate HTML (.html) entrypoints; this project was not run."
     )
+
+
+def tester_agent(state: AgentState):
+    """Tester node: runs the checks and surfaces any entrypoint fix.
+
+    When the developer had to correct the model's entrypoint, the
+    correction line is appended to the result text so the user can see
+    what was changed and why. It goes at the END of the text because
+    the graph router (and the GUI) read the result's first line.
+    """
+
+    result = _run_tester(state)
+
+    note = state.get("entrypoint_note", "")
+
+    if note and result.get("test_result"):
+        text = result["test_result"] + f"\nNOTE: {note}"
+        result = {
+            "test_result": text,
+            "final_response": text,
+        }
+
+    return result

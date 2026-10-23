@@ -34,7 +34,101 @@ class DeveloperOutput(BaseModel):
 structured_llm = get_structured_llm(DeveloperOutput)
 
 
-def developer_agent(state: AgentState):
+def _resolve_entrypoint(
+    entrypoint: str, files_created: list[str]
+) -> tuple[str | None, str]:
+    """Pick the entrypoint the tester should use.
+
+    Small local models regularly name the wrong entrypoint (a main.py
+    for a website, or a file that was never generated). When the right
+    entrypoint is unambiguous it is corrected instead of failing the
+    whole run.
+
+    Returns (entrypoint, note) on success, where note is "" when the
+    model's entrypoint was already right and a human-readable
+    "Entrypoint corrected: ..." line otherwise. Returns (None, reason)
+    when no entrypoint can be determined.
+    """
+
+    html_files = [
+        path
+        for path in files_created
+        if path.lower().endswith((".html", ".htm"))
+    ]
+    python_files = [
+        path for path in files_created if path.lower().endswith(".py")
+    ]
+
+    if html_files:
+        # Web project: the entrypoint is the HTML page. index.html is
+        # preferred; otherwise the first HTML file is the only sensible
+        # candidate.
+        if entrypoint in html_files:
+            return entrypoint, ""
+
+        corrected = (
+            "index.html" if "index.html" in html_files else html_files[0]
+        )
+
+        return corrected, (
+            f"Entrypoint corrected: {entrypoint or '(none)'} -> "
+            f"{corrected} (web project)"
+        )
+
+    if entrypoint in files_created:
+        return entrypoint, ""
+
+    if len(python_files) == 1:
+        corrected = python_files[0]
+
+        return corrected, (
+            f"Entrypoint corrected: {entrypoint or '(none)'} -> "
+            f"{corrected} (the named entrypoint was not generated)"
+        )
+
+    if not files_created:
+        return None, "the developer generated no files at all"
+
+    if not python_files:
+        return None, (
+            f"the entrypoint '{entrypoint}' was not generated and none "
+            "of the generated files can be run or validated as an "
+            "entrypoint"
+        )
+
+    return None, (
+        f"the entrypoint '{entrypoint}' was not generated and several "
+        f"Python files could be the entrypoint {python_files}, so the "
+        "right one cannot be picked automatically"
+    )
+
+
+def _unusable_payload(reason: str, files_created: list[str]) -> dict:
+    """Terminal state update for a developer payload that cannot be used.
+
+    The graph routes straight to END when the developer returns a
+    test_result, so the run finishes with this honest FAILED message
+    instead of an exception traceback.
+    """
+
+    failure = (
+        "STATUS: FAILED\n"
+        "REASON: The developer returned an unusable payload, so there "
+        f"is nothing to test: {reason}. No code was executed."
+    )
+
+    print(f"[DEVELOPER] Unusable payload: {reason}")
+
+    return {
+        "files_created": files_created,
+        "entrypoint": "",
+        "entrypoint_note": "",
+        "test_result": failure,
+        "final_response": failure,
+    }
+
+
+def _developer_agent_impl(state: AgentState):
 
     print("\n[DEVELOPER] Generating implementation...")
 
@@ -78,15 +172,17 @@ def developer_agent(state: AgentState):
         validation_error = validate_python_filename(file.path)
 
         if validation_error:
+            # A bad filename from the model must not kill the run:
+            # skip that one file and carry on with the rest.
             print(
-                f"[DEVELOPER] Unsafe filename detected: {file.path}"
+                f"[DEVELOPER] Skipping unsafe filename: {file.path}"
             )
 
             print(
                 f"[DEVELOPER] {validation_error}"
             )
 
-            raise ValueError(validation_error)
+            continue
 
         print(
             f"[DEVELOPER] Creating file: {file.path}"
@@ -106,31 +202,50 @@ def developer_agent(state: AgentState):
         files_created.append(file.path)
 
     # Payload validation: the entrypoint must be one of the files just
-    # created, and it must match the project type. In particular, a web
-    # project (which contains an HTML file) is never entered through a
-    # Python file invented only to satisfy the tester.
-    if result.entrypoint not in files_created:
-        raise ValueError(
-            f"Invalid entrypoint '{result.entrypoint}': it is not one of "
-            f"the generated files {files_created}."
-        )
-
-    is_web_project = any(
-        path.lower().endswith((".html", ".htm")) for path in files_created
+    # created, and it must match the project type. Small models get
+    # this wrong often (a main.py entrypoint for a website, or a file
+    # that was never generated), so an unambiguous mismatch is
+    # corrected here instead of raising and killing the run.
+    entrypoint, note_or_reason = _resolve_entrypoint(
+        result.entrypoint, files_created
     )
 
-    if is_web_project and result.entrypoint.lower().endswith(".py"):
-        raise ValueError(
-            f"Invalid entrypoint '{result.entrypoint}': this is a web "
-            "project (it contains an HTML file), so the entrypoint must "
-            "be the HTML page, not a Python file."
-        )
+    if entrypoint is None:
+        return _unusable_payload(note_or_reason, files_created)
+
+    if note_or_reason:
+        print(f"[DEVELOPER] {note_or_reason}")
 
     print(
-        f"[DEVELOPER] Entrypoint: {result.entrypoint}"
+        f"[DEVELOPER] Entrypoint: {entrypoint}"
     )
 
     return {
         "files_created": files_created,
-        "entrypoint": result.entrypoint,
+        "entrypoint": entrypoint,
+        "entrypoint_note": note_or_reason,
     }
+
+
+def developer_agent(state: AgentState):
+    """Developer node: never lets a bad model payload crash the graph.
+
+    A malformed payload (missing fields, an unusable entrypoint, an
+    unsafe filename) used to propagate out of the graph invocation as
+    a bare ValueError. Now every such case ends the run gracefully
+    with an honest FAILED result.
+    """
+
+    try:
+        return _developer_agent_impl(state)
+    except Exception as exc:
+        print(
+            f"[DEVELOPER] Payload handling failed: "
+            f"{type(exc).__name__}: {exc}"
+        )
+
+        return _unusable_payload(
+            f"the model's response could not be used "
+            f"({type(exc).__name__}: {exc})",
+            list(state.get("files_created", [])),
+        )

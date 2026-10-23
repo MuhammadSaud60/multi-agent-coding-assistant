@@ -27,6 +27,19 @@ def router(state):
     return state["next_agent"]
 
 
+def developer_router(state):
+
+    # The developer never raises on a bad model payload: when the
+    # payload is unusable it returns a terminal FAILED test_result
+    # itself. There is then nothing for the tester (or the debugger)
+    # to do, so the run ends with that honest message.
+    if state.get("test_result"):
+        print("\n[GRAPH] DEVELOPER PAYLOAD UNUSABLE → END")
+        return "finish"
+
+    return "tester"
+
+
 def test_router(state):
 
     result = state.get("test_result", "")
@@ -72,9 +85,13 @@ graph.add_edge(
 )
 
 
-graph.add_edge(
+graph.add_conditional_edges(
     "developer",
-    "tester"
+    developer_router,
+    {
+        "tester": "tester",
+        "finish": END
+    }
 )
 
 

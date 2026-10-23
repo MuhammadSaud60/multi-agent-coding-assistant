@@ -1,4 +1,11 @@
-"""Regression tests for the three defects fixed on 2026-10-23.
+"""Regression tests for the defects fixed on 2026-10-23.
+
+Scenarios 1-5 cover the original three defects (web projects forced
+through Python, destructive generated code executed by the tester,
+stale files polluting the workspace). Scenarios 6-8 cover the
+follow-up crash: a wrong entrypoint in the developer payload used to
+raise a ValueError that killed the whole run; it is now corrected
+when unambiguous and reported gracefully when it is not.
 
 Everything runs with the FAKE model provider (no Ollama server, no API
 key). Each scenario runs in a subprocess because the agents bind their
@@ -17,6 +24,17 @@ Scenarios:
              leave the first run's files behind.
   5. gui     A GUI RunManager run also clears the workspace first and
              emits the "Workspace cleared" log event.
+  6. entryfix_web
+             A web payload whose entrypoint wrongly points at the
+             generated main.py (the exact crash Saud hit locally) is
+             auto-corrected to index.html and validated, no exception.
+  7. entryfix_missing
+             A payload whose entrypoint names a file that was never
+             generated, with a single main.py present, is corrected to
+             main.py and the Python test passes.
+  8. entryfix_empty
+             A payload with zero files ends the run gracefully with
+             an honest FAILED result instead of raising.
 
 Usage (from the project root):
 
@@ -105,6 +123,50 @@ SECOND_PAYLOAD = {
     "entrypoint": "second.py",
 }
 
+# Mirrors Saud's local crash exactly: the model generated a web project
+# AND a main.py, then named main.py as the entrypoint.
+ENTRYFIX_WEB_PAYLOAD = {
+    "files": [
+        {
+            "path": "index.html",
+            "content": (
+                "<!DOCTYPE html>\n"
+                '<html lang="en">\n'
+                "<head>\n"
+                '<meta charset="utf-8">\n'
+                "<title>Entryfix Page</title>\n"
+                '<link rel="stylesheet" href="styles.css">\n'
+                "</head>\n"
+                "<body>\n"
+                "<h1>Entrypoint fix test</h1>\n"
+                "</body>\n"
+                "</html>\n"
+            ),
+        },
+        {
+            "path": "styles.css",
+            "content": "body { color: #222; }\n",
+        },
+        {
+            "path": "main.py",
+            "content": "print('this file must never be the web entrypoint')\n",
+        },
+    ],
+    "entrypoint": "main.py",
+}
+
+ENTRYFIX_MISSING_PAYLOAD = {
+    "files": [
+        {"path": "main.py", "content": "print('hello from the real main')\n"},
+    ],
+    "entrypoint": "app.py",
+}
+
+ENTRYFIX_EMPTY_PAYLOAD = {
+    "files": [],
+    "entrypoint": "main.py",
+}
+
 
 # ----------------------------------------------------------------------
 # Child-process scenarios (env is prepared by the parent)
@@ -189,10 +251,86 @@ def scenario_gui() -> list[str]:
     return failures
 
 
+def scenario_entryfix_web() -> list[str]:
+    from app.graph.workflow import workflow
+    from app.main import build_initial_state
+
+    workspace = Path(os.environ["MACA_WORKSPACE"])
+    # Must not raise: the old code crashed here with a ValueError.
+    result = workflow.invoke(build_initial_state("build a small website"))
+    test_result = result.get("test_result", "")
+
+    failures = []
+    if result.get("entrypoint") != "index.html":
+        failures.append(
+            f"entrypoint not corrected to index.html: {result.get('entrypoint')!r}"
+        )
+    if not test_result.startswith("STATUS: PASSED"):
+        failures.append(f"expected PASSED, got:\n{test_result}")
+    if "not executed" not in test_result.lower():
+        failures.append("result does not say the project was not executed")
+    if "Entrypoint corrected: main.py -> index.html" not in test_result:
+        failures.append("correction note missing from the result text")
+    if "must never be the web entrypoint" in test_result:
+        failures.append("main.py was executed for a web project")
+    if not (workspace / "index.html").is_file():
+        failures.append("index.html missing from the workspace")
+    return failures
+
+
+def scenario_entryfix_missing() -> list[str]:
+    from app.graph.workflow import workflow
+    from app.main import build_initial_state
+
+    result = workflow.invoke(
+        build_initial_state("create a python script that prints a greeting")
+    )
+    test_result = result.get("test_result", "")
+
+    failures = []
+    if result.get("entrypoint") != "main.py":
+        failures.append(
+            f"entrypoint not corrected to main.py: {result.get('entrypoint')!r}"
+        )
+    if not test_result.startswith("STATUS: PASSED"):
+        failures.append(f"expected PASSED, got:\n{test_result}")
+    if "hello from the real main" not in test_result:
+        failures.append("main.py output missing: the Python test did not run it")
+    if "Entrypoint corrected: app.py -> main.py" not in test_result:
+        failures.append("correction note missing from the result text")
+    return failures
+
+
+def scenario_entryfix_empty() -> list[str]:
+    from app.graph.workflow import workflow
+    from app.main import build_initial_state
+
+    # Must not raise: an empty payload ends the run gracefully.
+    result = workflow.invoke(build_initial_state("build something"))
+    test_result = result.get("test_result", "")
+    final_response = result.get("final_response", "")
+
+    failures = []
+    if not test_result.startswith("STATUS: FAILED"):
+        failures.append(f"expected FAILED result, got:\n{test_result}")
+    if "unusable payload" not in test_result:
+        failures.append("result does not explain the unusable payload")
+    if not final_response.startswith("STATUS: FAILED"):
+        failures.append("final_response does not carry the FAILED result")
+    if result.get("files_created"):
+        failures.append(f"files_created should be empty: {result.get('files_created')}")
+    if result.get("retry_count", 0) != 0:
+        failures.append("the debugger was invoked for an unusable payload")
+    return failures
+
+
 SCENARIOS = {
     "web": scenario_web,
     "blocked": scenario_blocked,
     "gui": scenario_gui,
+    "entryfix_web": scenario_entryfix_web,
+    "entryfix_missing": scenario_entryfix_missing,
+    "entryfix_empty": scenario_entryfix_empty,
 }
 
 
@@ -244,6 +382,9 @@ def main() -> int:
         ("web", WEB_PAYLOAD),
         ("blocked", BLOCKED_PAYLOAD),
         ("gui", WEB_PAYLOAD),
+        ("entryfix_web", ENTRYFIX_WEB_PAYLOAD),
+        ("entryfix_missing", ENTRYFIX_MISSING_PAYLOAD),
+        ("entryfix_empty", ENTRYFIX_EMPTY_PAYLOAD),
     ):
         workspace = tempfile.mkdtemp(prefix=f"maca-{name}-")
         proc = _run_subprocess(

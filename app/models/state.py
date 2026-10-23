@@ -11,6 +11,8 @@ class AgentState(TypedDict):
 
     entrypoint: str
 
+    entrypoint_note: str
+
     test_command: str
 
     working_directory: str
