@@ -23,8 +23,10 @@ class DeveloperOutput(BaseModel):
 
     entrypoint: str = Field(
         description=(
-            "The main executable file used to test the project. "
-            "For example: main.py, app.py, or src/main.py"
+            "The file the tester should check, matching the project type. "
+            "For a Python project this is the runnable script, e.g. main.py "
+            "or src/main.py. For a website (HTML/CSS/JS) this is the HTML "
+            "page, e.g. index.html, never a Python file."
         )
     )
 
@@ -57,7 +59,13 @@ def developer_agent(state: AgentState):
     - Do not only describe the code.
     - Actually provide the complete contents of every required file.
     - Choose the correct project entrypoint dynamically.
-    - The entrypoint must be a file that can be executed to test the project.
+    - The entrypoint must match the project type:
+      - Python project: the entrypoint is the runnable Python file
+        (for example main.py).
+      - Website (HTML/CSS/JS): the entrypoint is the HTML page
+        (for example index.html). Do NOT invent a Python file such as
+        main.py just to act as an entrypoint for a web project.
+    - The entrypoint must be one of the files you return.
     - Do not invent an entrypoint that does not exist.
     """
 
@@ -96,6 +104,27 @@ def developer_agent(state: AgentState):
         )
 
         files_created.append(file.path)
+
+    # Payload validation: the entrypoint must be one of the files just
+    # created, and it must match the project type. In particular, a web
+    # project (which contains an HTML file) is never entered through a
+    # Python file invented only to satisfy the tester.
+    if result.entrypoint not in files_created:
+        raise ValueError(
+            f"Invalid entrypoint '{result.entrypoint}': it is not one of "
+            f"the generated files {files_created}."
+        )
+
+    is_web_project = any(
+        path.lower().endswith((".html", ".htm")) for path in files_created
+    )
+
+    if is_web_project and result.entrypoint.lower().endswith(".py"):
+        raise ValueError(
+            f"Invalid entrypoint '{result.entrypoint}': this is a web "
+            "project (it contains an HTML file), so the entrypoint must "
+            "be the HTML page, not a Python file."
+        )
 
     print(
         f"[DEVELOPER] Entrypoint: {result.entrypoint}"

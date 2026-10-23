@@ -6,6 +6,7 @@ MACA_WORKSPACE) and can never escape it. Python filenames that would shadow
 a standard-library module are rejected on create.
 """
 
+import shutil
 from pathlib import Path
 
 from langchain_core.tools import tool
@@ -31,6 +32,48 @@ def safe_path(relative_path: str) -> Path:
         )
 
     return target
+
+
+def clear_workspace() -> int:
+    """
+    Remove every file and folder inside the workspace root, keeping the
+    root folder itself.
+
+    The workspace is a scratch output area: each new run starts from an
+    empty workspace so files from previous runs cannot pollute it. The
+    same path-safety rule as safe_path applies: a child is only removed
+    after resolving it and confirming it still lives inside the
+    workspace root, so nothing outside the root can ever be deleted.
+
+    Returns the number of top-level items removed.
+    """
+
+    PROJECT_DIR.mkdir(parents=True, exist_ok=True)
+
+    removed = 0
+
+    for child in PROJECT_DIR.iterdir():
+
+        resolved = child.resolve()
+
+        try:
+            resolved.relative_to(PROJECT_DIR)
+        except ValueError:
+            print(
+                f"[WORKSPACE] Skipping path outside workspace: {child}"
+            )
+            continue
+
+        if child.is_symlink():
+            child.unlink()
+        elif resolved.is_dir():
+            shutil.rmtree(resolved)
+        else:
+            resolved.unlink()
+
+        removed += 1
+
+    return removed
 
 
 @tool

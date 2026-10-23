@@ -13,6 +13,7 @@ import sys
 
 from app.config import get_workspace_root
 from app.graph.workflow import workflow
+from app.tools.workspace_tools import clear_workspace
 
 
 def build_initial_state(user_request: str) -> dict:
@@ -62,6 +63,12 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     print(f"\n[MAIN] Workspace: {get_workspace_root()}")
+
+    # The workspace is a scratch output area: start every run empty so
+    # files from previous runs cannot pollute this one.
+    removed = clear_workspace()
+    print(f"[MAIN] Cleared workspace for the new run ({removed} item(s) removed).")
+
     print(f"[MAIN] Request: {user_request}")
 
     result = workflow.invoke(build_initial_state(user_request))

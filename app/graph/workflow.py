@@ -32,6 +32,13 @@ def test_router(state):
     result = state.get("test_result", "")
     retry_count = state.get("retry_count", 0)
 
+    if result.startswith("BLOCKED"):
+        # The tester refused to run destructive generated code. Retrying
+        # can never fix that, so the run ends here with the honest
+        # BLOCKED result as its final response.
+        print("\n[GRAPH] TEST BLOCKED → END (never retried)")
+        return "finish"
+
     if result.startswith("STATUS: PASSED"):
         print("\n[GRAPH] TEST PASSED → END")
         return "finish"

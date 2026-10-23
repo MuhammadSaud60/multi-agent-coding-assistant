@@ -26,6 +26,7 @@ from pydantic import BaseModel
 from app.config import get_workspace_root
 from app.graph.workflow import workflow
 from app.main import build_initial_state
+from app.tools.workspace_tools import clear_workspace
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 WORKSPACE = get_workspace_root()
@@ -106,6 +107,19 @@ class RunManager:
         self.agent_status = {name: "idle" for name in AGENT_NAMES}
         self.current_agent = None
         self.emit({"type": "run_started", "request": user_request})
+
+        # The workspace is a scratch output area: start every run empty
+        # so files from previous runs cannot pollute this one.
+        removed = clear_workspace()
+        self.emit(
+            {
+                "type": "log",
+                "message": (
+                    "Workspace cleared for the new run "
+                    f"({removed} item(s) removed)."
+                ),
+            }
+        )
 
         summary = {
             "plan": "",
