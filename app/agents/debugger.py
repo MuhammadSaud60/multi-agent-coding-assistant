@@ -1,28 +1,15 @@
-from langchain_ollama import ChatOllama
-from langchain.agents import create_agent
-
-from models.state import AgentState
-from tools.file_tools import (
-    read_file,
-    update_file,
-)
-
-from tools.workspace_tools import (
+from app.config import get_llm
+from app.models.state import AgentState
+from app.tools.command_tools import run_command
+from app.tools.workspace_tools import (
+    create_file,
+    delete_file,
     list_files,
     read_file,
-    create_file,
     update_file,
-    delete_file,
 )
 
-from tools.command_tools import run_command
-
-
-llm = ChatOllama(
-    model="llama3.2:3b",
-    temperature=0,
-)
-
+llm = get_llm("debugger")
 
 tools = [
     list_files,
@@ -31,14 +18,27 @@ tools = [
     update_file,
     delete_file,
     run_command,
-
 ]
 
+_debug_agent = None
 
-debug_agent = create_agent(
-    model=llm,
-    tools=tools,
-    system_prompt="""
+
+def _get_debug_agent():
+    """Build the ReAct debugging agent lazily on first use.
+
+    Building it at import time would force tool binding even for runs that
+    never fail a test (and for models that cannot bind tools, such as the
+    offline fake provider).
+    """
+    global _debug_agent
+
+    if _debug_agent is None:
+        from langchain.agents import create_agent
+
+        _debug_agent = create_agent(
+            model=llm,
+            tools=tools,
+            system_prompt="""
 You are an expert software debugging agent.
 
 Your job is to fix actual files in the project.
@@ -51,7 +51,9 @@ Rules:
 5. Do not invent filenames.
 6. Preserve working code and change only what is necessary.
 """,
-)
+        )
+
+    return _debug_agent
 
 
 def debugger_agent(state: AgentState):
@@ -81,7 +83,7 @@ Then use update_file to fix it.
 After fixing the file, briefly report what you changed.
 """
 
-    response = debug_agent.invoke(
+    response = _get_debug_agent().invoke(
         {
             "messages": [
                 {
@@ -95,6 +97,5 @@ After fixing the file, briefly report what you changed.
     print("[DEBUGGER] Finished debugging.")
 
     return {
-        "code": response["messages"][-1].content,
         "retry_count": state.get("retry_count", 0) + 1,
     }

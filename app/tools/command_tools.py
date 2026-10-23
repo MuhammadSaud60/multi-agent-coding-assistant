@@ -1,10 +1,11 @@
-from pathlib import Path
 import subprocess
 
 from langchain_core.tools import tool
 
+from app.config import get_workspace_root
 
-PROJECT_DIR = Path("generated_project").resolve()
+
+PROJECT_DIR = get_workspace_root()
 
 
 ALLOWED_COMMANDS = {

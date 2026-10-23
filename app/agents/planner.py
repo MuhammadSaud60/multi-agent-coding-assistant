@@ -1,26 +1,7 @@
-from langchain_google_genai import ChatGoogleGenerativeAI
-from langchain_ollama import ChatOllama  # local
-from models.state import AgentState
-from dotenv import load_dotenv
-import os
+from app.config import get_llm
+from app.models.state import AgentState
 
-load_dotenv()
-
-model = os.getenv('model')
-
-
-
-# llm = ChatGoogleGenerativeAI(
-#     model=model,
-   
-#     temperature=0
-# )
-
-llm = ChatOllama(
-    model='llama3.2:3b',
-    temperature=0
-)
-
+llm = get_llm("planner")
 
 
 def planner_agent(state: AgentState):
@@ -37,7 +18,6 @@ def planner_agent(state: AgentState):
         """
 
     response = llm.invoke(prompt)
-
 
     return {
         "plan": response.content

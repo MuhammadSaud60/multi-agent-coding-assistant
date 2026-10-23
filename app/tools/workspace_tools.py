@@ -1,8 +1,19 @@
+"""The single file API for the generated-project workspace.
+
+All file access by agents goes through these tools. Paths are resolved
+against the workspace root (see app.config.get_workspace_root, env var
+MACA_WORKSPACE) and can never escape it. Python filenames that would shadow
+a standard-library module are rejected on create.
+"""
+
 from pathlib import Path
+
 from langchain_core.tools import tool
 
+from app.config import get_workspace_root
+from app.tools.project_tools import validate_python_filename
 
-PROJECT_DIR = Path("generated_project").resolve()
+PROJECT_DIR = get_workspace_root()
 
 
 def safe_path(relative_path: str) -> Path:
@@ -34,11 +45,8 @@ def list_files() -> list[str]:
     files = []
 
     for path in PROJECT_DIR.rglob("*"):
-
         if path.is_file():
-            files.append(
-                str(path.relative_to(PROJECT_DIR))
-            )
+            files.append(str(path.relative_to(PROJECT_DIR)))
 
     return sorted(files)
 
@@ -57,9 +65,7 @@ def read_file(filename: str) -> str:
     if not path.is_file():
         return f"Not a file: {filename}"
 
-    return path.read_text(
-        encoding="utf-8"
-    )
+    return path.read_text(encoding="utf-8")
 
 
 @tool
@@ -68,17 +74,16 @@ def create_file(filename: str, content: str) -> str:
     Create or overwrite a file in the project workspace.
     """
 
+    validation_error = validate_python_filename(filename)
+
+    if validation_error:
+        raise ValueError(validation_error)
+
     path = safe_path(filename)
 
-    path.parent.mkdir(
-        parents=True,
-        exist_ok=True
-    )
+    path.parent.mkdir(parents=True, exist_ok=True)
 
-    path.write_text(
-        content,
-        encoding="utf-8"
-    )
+    path.write_text(content, encoding="utf-8")
 
     return f"Created: {filename}"
 
@@ -94,10 +99,7 @@ def update_file(filename: str, content: str) -> str:
     if not path.exists():
         return f"File not found: {filename}"
 
-    path.write_text(
-        content,
-        encoding="utf-8"
-    )
+    path.write_text(content, encoding="utf-8")
 
     return f"Updated: {filename}"
 

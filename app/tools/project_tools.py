@@ -2,9 +2,6 @@ from pathlib import Path
 import sys
 
 
-PROJECT_DIR = Path("generated_project")
-
-
 def validate_python_filename(filename: str) -> str | None:
     """
     Prevent Python files from shadowing standard-library modules.

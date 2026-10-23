@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Multi-Agent Coding Assistant</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <header id="titlebar">
+    <div class="traffic"><span class="dot r"></span><span class="dot y"></span><span class="dot g"></span></div>
+    <div class="title">Multi-Agent Coding Assistant</div>
+    <div id="run-status" class="status-pill idle">idle</div>
+  </header>
+
+  <div id="workbench">
+    <!-- LEFT: explorer + agents -->
+    <aside id="sidebar">
+      <div class="side-section">
+        <h2>Explorer</h2>
+        <div id="workspace-path" class="workspace-path"></div>
+        <div id="file-tree" class="tree"></div>
+      </div>
+      <div class="side-section agents">
+        <h2>Agents</h2>
+        <ul id="agent-list">
+          <li data-agent="supervisor"><span class="agent-dot idle"></span>Supervisor</li>
+          <li data-agent="planner"><span class="agent-dot idle"></span>Planner</li>
+          <li data-agent="developer"><span class="agent-dot idle"></span>Developer</li>
+          <li data-agent="tester"><span class="agent-dot idle"></span>Tester</li>
+          <li data-agent="debugger"><span class="agent-dot idle"></span>Debugger</li>
+        </ul>
+      </div>
+    </aside>
+
+    <!-- CENTER: editor + terminal -->
+    <main id="editor-area">
+      <div id="tabs"><div id="active-tab" class="tab">Welcome</div></div>
+      <div id="editor">
+        <pre id="code"><code id="code-content">// Select a file in the Explorer, or run the agents to generate code.</code></pre>
+      </div>
+      <div id="terminal-panel">
+        <div class="panel-tabs"><span class="panel-tab active">Terminal</span><span id="terminal-meta"></span></div>
+        <pre id="terminal"></pre>
+      </div>
+    </main>
+
+    <!-- RIGHT: chat -->
+    <aside id="chat">
+      <h2>Chat</h2>
+      <div id="chat-log"></div>
+      <form id="run-form">
+        <textarea id="request-input" rows="3" placeholder="What should the agents build? e.g. create a Python script that prints the first 20 Fibonacci numbers"></textarea>
+        <button id="run-button" type="submit">Run agents</button>
+      </form>
+    </aside>
+  </div>
+
+<script src="/static/app.js"></script>
+</body>
+</html>

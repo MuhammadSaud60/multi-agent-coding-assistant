@@ -1,15 +1,9 @@
 from pydantic import BaseModel, Field
-from langchain_ollama import ChatOllama
 
-from models.state import AgentState
-from tools.workspace_tools import (
-    list_files,
-    read_file,
-    create_file,
-    update_file,
-    delete_file,
-)
-from tools.project_tools import validate_python_filename
+from app.config import get_structured_llm
+from app.models.state import AgentState
+from app.tools.project_tools import validate_python_filename
+from app.tools.workspace_tools import create_file
 
 
 class GeneratedFile(BaseModel):
@@ -35,17 +29,7 @@ class DeveloperOutput(BaseModel):
     )
 
 
-llm = ChatOllama(
-    model="llama3.2:3b",
-    
-    temperature=0
-)
-
-
-structured_llm = llm.with_structured_output(
-    DeveloperOutput,
-    method="json_schema"
-)
+structured_llm = get_structured_llm(DeveloperOutput)
 
 
 def developer_agent(state: AgentState):
@@ -113,12 +97,11 @@ def developer_agent(state: AgentState):
 
         files_created.append(file.path)
 
-        print(
-            f"[DEVELOPER] Entrypoint: {result.entrypoint}"
-        )
+    print(
+        f"[DEVELOPER] Entrypoint: {result.entrypoint}"
+    )
 
     return {
-        "code": result.model_dump_json(),
         "files_created": files_created,
         "entrypoint": result.entrypoint,
     }

@@ -1,28 +1,12 @@
-from langchain_google_genai import ChatGoogleGenerativeAI
-from langchain_ollama import ChatOllama
-from models.state import AgentState
-from dotenv import load_dotenv
-import os
+from app.config import get_llm
+from app.models.state import AgentState
 
-load_dotenv()
-
-model = os.getenv('model')
-
-# llm = ChatGoogleGenerativeAI(
-#     model=model,
-#     temperature=0
-# )
-
-llm = ChatOllama(
-    model='llama3.2:3b',
-    temperature=0
-)
+llm = get_llm("supervisor")
 
 
 def supervisor_agent(state: AgentState):
 
     request = state["user_request"]
-
 
     prompt = f"""
 
@@ -52,12 +36,16 @@ def supervisor_agent(state: AgentState):
 
         """
 
-
     response = llm.invoke(prompt)
-
 
     decision = response.content.strip().lower()
 
+    # The graph router only accepts "planner" or "developer"; anything
+    # else the model returns is normalised here instead of crashing it.
+    if "developer" in decision:
+        decision = "developer"
+    else:
+        decision = "planner"
 
     return {
         "next_agent": decision
