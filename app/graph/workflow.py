@@ -8,6 +8,7 @@ from app.agents.planner import planner_agent
 from app.agents.developer import developer_agent
 from app.agents.tester import tester_agent
 from app.agents.debugger import debugger_agent
+from app.agents.workspace_action import workspace_action_agent
 
 
 graph = StateGraph(AgentState)
@@ -18,6 +19,7 @@ graph.add_node("planner", planner_agent)
 graph.add_node("developer", developer_agent)
 graph.add_node("tester", tester_agent)
 graph.add_node("debugger", debugger_agent)
+graph.add_node("workspace_action", workspace_action_agent)
 
 
 graph.set_entry_point("supervisor")
@@ -89,8 +91,18 @@ graph.add_conditional_edges(
         "developer": "developer",
         # Run/test-only requests skip generation entirely and exercise
         # the project already sitting in the workspace.
-        "tester": "tester"
+        "tester": "tester",
+        # Pure delete requests are performed as a direct operation
+        # on the workspace, never as code generation.
+        "workspace_action": "workspace_action"
     }
+)
+
+
+# A direct action is the whole run: its outcome is the result.
+graph.add_edge(
+    "workspace_action",
+    END
 )
 
 

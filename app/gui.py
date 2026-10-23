@@ -24,6 +24,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from app.config import get_workspace_root
+from app.direct_actions import handle_delete_request
 from app.graph.workflow import workflow
 from app.intent import is_test_only_request
 from app.main import build_initial_state
@@ -108,6 +109,47 @@ class RunManager:
         self.agent_status = {name: "idle" for name in AGENT_NAMES}
         self.current_agent = None
         self.emit({"type": "run_started", "request": user_request})
+
+        # A pure delete request is an operation on the workspace,
+        # not a build: perform it directly and present the outcome
+        # as the run's result. No agents run, nothing is generated,
+        # and the workspace is NOT cleared for a new run first.
+        delete_outcome = handle_delete_request(user_request)
+
+        if delete_outcome is not None:
+            self.agent_status["supervisor"] = "done"
+            self.emit(
+                {
+                    "type": "log",
+                    "message": (
+                        "Delete request: handled directly "
+                        "(no agents run, nothing generated)."
+                    ),
+                }
+            )
+            self.emit(
+                {
+                    "type": "agent",
+                    "agent": "supervisor",
+                    "message": delete_outcome,
+                    "test_result": "",
+                    "plan": "",
+                    "files_created": [],
+                }
+            )
+            summary = {
+                "plan": "",
+                "files_created": [],
+                "entrypoint": "",
+                "test_result": delete_outcome,
+                "final_response": delete_outcome,
+            }
+            self.last_summary = summary
+            self.emit({"type": "run_finished", "summary": summary})
+            self.current_agent = None
+            self.running = False
+            self.emit({"type": "status", "status": self.status()})
+            return
 
         if is_test_only_request(user_request):
             # Run/test-only: the existing workspace IS the subject of

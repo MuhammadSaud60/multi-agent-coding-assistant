@@ -12,6 +12,7 @@ import argparse
 import sys
 
 from app.config import get_workspace_root
+from app.direct_actions import handle_delete_request
 from app.graph.workflow import workflow
 from app.intent import is_test_only_request
 from app.tools.workspace_tools import clear_workspace
@@ -66,6 +67,21 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     print(f"\n[MAIN] Workspace: {get_workspace_root()}")
+
+    # A pure delete request is an operation on the workspace, not a
+    # build: perform it directly and report the outcome as the run's
+    # result. No agents run and nothing is generated.
+    delete_outcome = handle_delete_request(user_request)
+
+    if delete_outcome is not None:
+        print(
+            "[MAIN] Delete request: handled directly "
+            "(no agents run, nothing generated)."
+        )
+        print(f"[MAIN] Request: {user_request}")
+        print("\n================ RESULT ================")
+        print(delete_outcome)
+        return 0
 
     if is_test_only_request(user_request):
         # Run/test-only: the existing workspace IS the subject of the

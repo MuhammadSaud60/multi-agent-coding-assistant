@@ -60,6 +60,38 @@ Scenarios:
              project: the old file must be MOVED into a timestamped
              backup folder next to the workspace (never deleted), and
              the CLI output must say where it went.
+ 13. deletenamed
+             "delete notes.txt" in a workspace holding main.py +
+             notes.txt: notes.txt is deleted directly, main.py is
+             untouched, and the developer never runs (the marker
+             payload would expose it). No deletion script is ever
+             generated.
+ 14. deleteall
+             "delete all files" empties the workspace by MOVING both
+             files into the timestamped backup folder, not by
+             hard-deleting them.
+ 15. deletevague
+             "delete the existing file" with two files present and
+             none named: nothing is deleted and the result lists
+             both files and asks for a name or "all".
+ 16. deleteone
+             "delete the existing file" with exactly one file
+             present: that file is removed from the workspace via
+             the backup path.
+ 17. deletegui
+             The same named delete driven through the GUI RunManager:
+             the file is gone afterwards and the run summary carries
+             the outcome.
+ 18. deletecli
+             The same named delete driven through the CLI entry
+             point as a subprocess.
+
+Note on scenario 2 (blocked): its request used to be the literal
+"delete all files", which is now a direct workspace action (scenario
+14) and never reaches the developer. The scenario now phrases the
+request as a build ("create a file cleanup script") so the fake
+developer's destructive payload still exercises the tester's
+BLOCKED gate exactly as before.
 
 Usage (from the project root):
 
@@ -331,7 +363,11 @@ def scenario_blocked() -> list[str]:
     from app.main import build_initial_state
 
     workspace = Path(os.environ["MACA_WORKSPACE"])
-    result = workflow.invoke(build_initial_state("delete all files"))
+    # Phrased as a build on purpose: the literal "delete all files"
+    # is a direct workspace action now (scenario deleteall) and never
+    # reaches the developer. This scenario guards the tester's gate
+    # against GENERATED destructive code, whatever the request was.
+    result = workflow.invoke(build_initial_state("create a file cleanup script"))
     test_result = result.get("test_result", "")
 
     failures = []
@@ -616,6 +652,175 @@ def scenario_runexisting_web() -> list[str]:
     return failures
 
 
+def _populate(workspace: Path, files: dict[str, str]) -> None:
+    workspace.mkdir(parents=True, exist_ok=True)
+    for name, content in files.items():
+        (workspace / name).write_text(content, encoding="utf-8")
+
+
+def _backup_root(workspace: Path) -> Path:
+    return workspace.parent / f"{workspace.name}_backups"
+
+
+def scenario_deletenamed() -> list[str]:
+    from app.graph.workflow import workflow
+    from app.main import build_initial_state
+
+    workspace = Path(os.environ["MACA_WORKSPACE"])
+    _populate(
+        workspace,
+        {
+            "main.py": "print('keep me')\n",
+            "notes.txt": "scratch notes\n",
+        },
+    )
+
+    result = workflow.invoke(build_initial_state("delete notes.txt"))
+    outcome = result.get("final_response", "")
+
+    failures = []
+    if (workspace / "notes.txt").exists():
+        failures.append("notes.txt is still in the workspace")
+    if not (workspace / "main.py").is_file():
+        failures.append("main.py was removed by a named delete of notes.txt")
+    elif (workspace / "main.py").read_text(encoding="utf-8") != "print('keep me')\n":
+        failures.append("main.py content changed")
+    if (workspace / "developer_was_here.py").exists():
+        failures.append("the developer ran for a direct delete request")
+    if result.get("files_created"):
+        failures.append(f"files were generated: {result.get('files_created')}")
+    if "Deleted from workspace: notes.txt" not in outcome:
+        failures.append(f"outcome does not report the deletion:\n{outcome}")
+    if result.get("test_result", "") != outcome:
+        failures.append("test_result does not carry the delete outcome")
+    return failures
+
+
+def scenario_deleteall() -> list[str]:
+    from app.graph.workflow import workflow
+    from app.main import build_initial_state
+
+    workspace = Path(os.environ["MACA_WORKSPACE"])
+    _populate(
+        workspace,
+        {
+            "main.py": "print('one')\n",
+            "notes.txt": "two\n",
+        },
+    )
+
+    result = workflow.invoke(build_initial_state("delete all files"))
+    outcome = result.get("final_response", "")
+
+    failures = []
+    remaining = _snapshot(workspace)
+    if remaining:
+        failures.append(f"workspace not emptied: {sorted(remaining)}")
+    backup_root = _backup_root(workspace)
+    for name, content in (("main.py", "print('one')\n"), ("notes.txt", "two\n")):
+        archived = sorted(backup_root.glob(f"*/{name}"))
+        if not archived:
+            failures.append(f"{name} was not moved under {backup_root}")
+        elif archived[0].read_text(encoding="utf-8") != content:
+            failures.append(f"archived {name} content changed")
+    if "Moved 2 item(s) to backup" not in outcome:
+        failures.append(f"outcome does not report the backup move:\n{outcome}")
+    if (workspace / "developer_was_here.py").exists():
+        failures.append("the developer ran for a direct delete request")
+    return failures
+
+
+def scenario_deletevague() -> list[str]:
+    from app.graph.workflow import workflow
+    from app.main import build_initial_state
+
+    workspace = Path(os.environ["MACA_WORKSPACE"])
+    _populate(
+        workspace,
+        {
+            "main.py": "print('one')\n",
+            "notes.txt": "two\n",
+        },
+    )
+    before = _snapshot(workspace)
+
+    result = workflow.invoke(build_initial_state("delete the existing file"))
+    outcome = result.get("final_response", "")
+
+    failures = []
+    if _snapshot(workspace) != before:
+        failures.append("files changed for an ambiguous delete request")
+    if _backup_root(workspace).exists():
+        failures.append("a backup was created for an ambiguous delete request")
+    if "Nothing was deleted" not in outcome:
+        failures.append(f"outcome does not say nothing was deleted:\n{outcome}")
+    for name in ("main.py", "notes.txt"):
+        if name not in outcome:
+            failures.append(f"outcome does not list {name}")
+    if (workspace / "developer_was_here.py").exists():
+        failures.append("the developer ran for a direct delete request")
+    return failures
+
+
+def scenario_deleteone() -> list[str]:
+    from app.graph.workflow import workflow
+    from app.main import build_initial_state
+
+    workspace = Path(os.environ["MACA_WORKSPACE"])
+    _populate(workspace, {"main.py": "print('only file')\n"})
+
+    result = workflow.invoke(build_initial_state("delete the existing file"))
+    outcome = result.get("final_response", "")
+
+    failures = []
+    if (workspace / "main.py").exists():
+        failures.append("the single existing file is still in the workspace")
+    archived = sorted(_backup_root(workspace).glob("*/main.py"))
+    if not archived:
+        failures.append("the file was not moved into the backup folder")
+    elif archived[0].read_text(encoding="utf-8") != "print('only file')\n":
+        failures.append("archived main.py content changed")
+    if "Moved 1 item(s) to backup" not in outcome:
+        failures.append(f"outcome does not report the backup move:\n{outcome}")
+    if (workspace / "developer_was_here.py").exists():
+        failures.append("the developer ran for a direct delete request")
+    return failures
+
+
+def scenario_deletegui() -> list[str]:
+    from app.gui import RunManager
+
+    workspace = Path(os.environ["MACA_WORKSPACE"])
+    _populate(
+        workspace,
+        {
+            "main.py": "print('keep me')\n",
+            "notes.txt": "scratch notes\n",
+        },
+    )
+
+    manager = RunManager()
+    manager._run("delete notes.txt")
+
+    failures = []
+    if (workspace / "notes.txt").exists():
+        failures.append("GUI run did not delete notes.txt")
+    if not (workspace / "main.py").is_file():
+        failures.append("GUI run removed main.py as well")
+    summary = manager.last_summary or {}
+    if not summary.get("test_result", "").startswith(
+        "Deleted from workspace: notes.txt"
+    ):
+        failures.append(
+            f"GUI summary does not carry the outcome: {summary.get('test_result')!r}"
+        )
+    if not any(
+        event.get("type") == "run_finished" for event in manager.events
+    ):
+        failures.append("GUI run did not emit run_finished")
+    return failures
+
+
 SCENARIOS = {
     "web": scenario_web,
     "blocked": scenario_blocked,
@@ -626,6 +831,11 @@ SCENARIOS = {
     "listcontent": scenario_listcontent,
     "runexisting": scenario_runexisting,
     "runexisting_web": scenario_runexisting_web,
+    "deletenamed": scenario_deletenamed,
+    "deleteall": scenario_deleteall,
+    "deletevague": scenario_deletevague,
+    "deleteone": scenario_deleteone,
+    "deletegui": scenario_deletegui,
 }
 
 
@@ -683,6 +893,13 @@ def main() -> int:
         ("listcontent", LISTCONTENT_PAYLOAD),
         ("runexisting", DEVELOPER_MARKER_PAYLOAD),
         ("runexisting_web", DEVELOPER_MARKER_PAYLOAD),
+        # Delete scenarios: the marker payload exposes any developer
+        # run, which a direct delete request must never trigger.
+        ("deletenamed", DEVELOPER_MARKER_PAYLOAD),
+        ("deleteall", DEVELOPER_MARKER_PAYLOAD),
+        ("deletevague", DEVELOPER_MARKER_PAYLOAD),
+        ("deleteone", DEVELOPER_MARKER_PAYLOAD),
+        ("deletegui", DEVELOPER_MARKER_PAYLOAD),
     ):
         workspace = tempfile.mkdtemp(prefix=f"maca-{name}-")
         proc = _run_subprocess(
@@ -779,6 +996,39 @@ def main() -> int:
     for line in detail:
         print(line)
     results["backup"] = backup_ok
+
+    # 18: the CLI entry point performs a named delete directly,
+    # without running the agent graph at all.
+    workspace = tempfile.mkdtemp(prefix="maca-deletecli-")
+    ws_path = Path(workspace)
+    (ws_path / "main.py").write_text("print('keep me')\n", encoding="utf-8")
+    (ws_path / "notes.txt").write_text("scratch notes\n", encoding="utf-8")
+    proc = _run_subprocess(
+        [PY, "-m", "app.main", "delete notes.txt"],
+        _base_env(workspace, None),
+    )
+    deletecli_ok = proc.returncode == 0
+    detail = []
+    if not deletecli_ok:
+        detail.append(
+            f"CLI delete run failed:\n{proc.stdout[-1500:]}\n{proc.stderr[-1500:]}"
+        )
+    else:
+        if "Deleted from workspace: notes.txt" not in proc.stdout:
+            deletecli_ok = False
+            detail.append("CLI output does not report the deletion")
+        if (ws_path / "notes.txt").exists():
+            deletecli_ok = False
+            detail.append("notes.txt still in the workspace after the CLI run")
+        if not (ws_path / "main.py").is_file():
+            deletecli_ok = False
+            detail.append("main.py was removed by the CLI delete run")
+        if deletecli_ok:
+            detail.append("CLI deleted notes.txt directly; main.py untouched")
+    print(f"\n===== scenario 'deletecli': {'PASSED' if deletecli_ok else 'FAILED'} =====")
+    for line in detail:
+        print(line)
+    results["deletecli"] = deletecli_ok
 
     print("\n================ SUMMARY ================")
     for name, ok in results.items():

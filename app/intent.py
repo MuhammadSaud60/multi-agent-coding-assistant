@@ -7,6 +7,15 @@ must go straight to the tester. Regenerating code for such a request
 destroys the user's existing project, which is exactly the bug this
 detector exists to prevent.
 
+The same applies to direct file-management requests ("delete the
+existing file", "delete notes.txt", "delete all files"): the user is
+asking for an OPERATION on the workspace, not for a project to be
+built. Routing those to the developer made it generate a deletion
+script (which the tester then, correctly, blocked as destructive)
+while the file the user meant stayed exactly where it was.
+parse_delete_request() recognises them so the entry points (and the
+supervisor, as a safety net) can perform the deletion directly.
+
 Detection is deliberately rule-based rather than model-based: the
 entry points (CLI and GUI) must know the answer BEFORE the graph
 starts, because they decide whether the workspace may be cleared,
@@ -14,6 +23,7 @@ and a small local model cannot be trusted with that decision.
 """
 
 import re
+from typing import NamedTuple
 
 from app.text_utils import to_text
 
@@ -98,3 +108,100 @@ def is_test_only_request(request) -> bool:
         any(word in _EXISTING_REFERENCES for word in words)
         or len(words) <= 3
     )
+
+
+# ----------------------------------------------------------------------
+# Delete / file-management requests
+# ----------------------------------------------------------------------
+
+# Verbs that ask for a file to be removed from the workspace.
+_DELETE_VERBS = {
+    "delete",
+    "remove",
+    "erase",
+}
+
+# Build verbs OTHER than the delete verbs themselves. Any of these
+# makes the request a build request that merely mentions deletion
+# ("delete the file and create a fresh one", "fix the bug and remove
+# the workaround") and it must follow the normal planner/developer
+# path, never the direct action.
+_PURE_BUILD_VERBS = _BUILD_VERBS - _DELETE_VERBS
+
+# Words that widen a delete request to the whole workspace.
+_ALL_WORDS = {
+    "all",
+    "every",
+    "everything",
+    # Roman Urdu: "sab files" / "sare files" = "all the files".
+    "sab",
+    "sara",
+    "sare",
+    "saari",
+}
+
+# A filename as users actually type one: notes.txt, main.py,
+# index.html, src/app.js. Matched against the raw request text.
+_FILENAME_RE = re.compile(r"[\w][\w.\-/]*\.[a-z0-9]{2,10}")
+
+
+class DeleteIntent(NamedTuple):
+    """A pure workspace-deletion request, as parsed from the text.
+
+    kind:
+      "named" — the request names one specific file (filename set).
+      "all"   — the wording covers the whole workspace ("all",
+                "everything", "sab", or the plural "files" with no
+                name: "delete the existing files").
+      "plain" — a delete of "the file" with no name and no all-word;
+                what it means depends on how many files the workspace
+                holds, which only the action layer can see.
+    """
+
+    kind: str
+    filename: str | None
+
+
+def parse_delete_request(request) -> DeleteIntent | None:
+    """Parse a pure delete request, or return None.
+
+    Conservative in the same way as is_test_only_request: a delete
+    verb is required, and any other build verb disqualifies the
+    request, so a build that happens to mention deleting something
+    is never hijacked into a direct file operation.
+    """
+
+    text = to_text(request).lower()
+    words = re.findall(r"[a-z']+", text)
+
+    if not words:
+        return None
+
+    if not any(word in _DELETE_VERBS for word in words):
+        return None
+
+    if any(word in _PURE_BUILD_VERBS for word in words):
+        return None
+
+    match = _FILENAME_RE.search(text)
+
+    if match:
+        return DeleteIntent(kind="named", filename=match.group(0))
+
+    if any(word in _ALL_WORDS for word in words) or "files" in words:
+        return DeleteIntent(kind="all", filename=None)
+
+    # "delete the existing file" / "delete it": a plain delete whose
+    # target the workspace contents must decide.
+    if "file" in words or any(
+        word in _EXISTING_REFERENCES for word in words
+    ):
+        return DeleteIntent(kind="plain", filename=None)
+
+    return None
+
+
+def is_delete_request(request) -> bool:
+    """True when the request is a pure workspace-deletion request."""
+
+    return parse_delete_request(request) is not None

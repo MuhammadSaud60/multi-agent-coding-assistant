@@ -1,5 +1,5 @@
 from app.config import get_llm
-from app.intent import is_test_only_request
+from app.intent import is_delete_request, is_test_only_request
 from app.models.state import AgentState
 from app.text_utils import to_text
 
@@ -9,6 +9,18 @@ llm = get_llm("supervisor")
 def supervisor_agent(state: AgentState):
 
     request = state["user_request"]
+
+    # A pure delete request ("delete the existing file") is an
+    # operation on the workspace, not a build. The entry points
+    # normally perform it before the graph starts; if one reaches
+    # the graph anyway, route it to the direct action so the
+    # developer never generates a deletion script for it.
+    if is_delete_request(request):
+        print("[SUPERVISOR] Delete request -> direct workspace action")
+        return {
+            "next_agent": "workspace_action",
+            "test_only": False,
+        }
 
     # A run/test-only request ("run the code") targets the project
     # that is already in the workspace. Sending it to the planner or
