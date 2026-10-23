@@ -19,3 +19,5 @@ dist/
 .env.*
 !.env.example
 generated_project/
+generated_project_backups/
+maca-memory.json

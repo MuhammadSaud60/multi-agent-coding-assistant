@@ -76,6 +76,19 @@ def get_workspace_root() -> Path:
     return (PROJECT_ROOT / "generated_project").resolve()
 
 
+def get_memory_path() -> Path:
+    """Where the persistent project memory lives.
+
+    A sibling of the workspace root, NEVER inside it: run-start
+    clearing moves everything inside the workspace into a backup
+    folder, so memory kept there would be archived away with the
+    project it describes. Beside the workspace it survives fresh
+    builds, edits and clears alike, and follows MACA_WORKSPACE
+    wherever it points.
+    """
+    return get_workspace_root().parent / "maca-memory.json"
+
+
 def get_provider() -> str:
     return os.getenv("MACA_MODEL_PROVIDER", "ollama").strip().lower()
 

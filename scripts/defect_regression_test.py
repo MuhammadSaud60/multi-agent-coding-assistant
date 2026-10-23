@@ -126,6 +126,16 @@ Scenarios:
              chat stream and terminal show only the phase lines
              Thinking / Building / Testing and a final Done, and
              never the verbose tester dump ("MODE:", "CHECKS:").
+ 26. designmemory
+             Saud's three-run session replays faithfully: a fresh
+             animated-text page; a follow-up whose developer BADLY
+             drops the heading text — the preservation guard fires,
+             exactly one corrective pass restores it, and the
+             shapes stay; a proper third edit (dark background)
+             the guard passes. The memory file beside the
+             workspace then holds all three requests in order and
+             run 1's palette, and run 3's developer prompt carried
+             the earlier requests and the locked colours.
 
 Note on scenario 2 (blocked): its request used to be the literal
 "delete all files", which is now a direct workspace action (scenario
@@ -350,6 +360,119 @@ FRESHSTART_PAYLOAD = {
         {"path": "main.py", "content": "print('brand new project')\n"},
     ],
     "entrypoint": "main.py",
+}
+
+# Payloads for scenario designmemory: Saud's exact three-step
+# session. Run 1 builds a page whose heading text is animated.
+# Run 2's developer BADLY returns a redesigned page with shapes
+# but WITHOUT the heading text — the preservation guard must fire
+# and the corrective pass (third payload) restores the text while
+# keeping the shapes. Run 3's developer returns a proper edit:
+# dark background, animations on shapes and text, everything kept.
+DM_REQUEST_1 = "create web page with text animation"
+DM_REQUEST_2 = "add some shapes with infinite animations"
+DM_REQUEST_3 = (
+    "add animation to the shapes and text as well "
+    "and make the background dark"
+)
+
+DM_INDEX_V1 = (
+    "<!DOCTYPE html>\n"
+    '<html lang="en">\n'
+    "<head>\n"
+    '<meta charset="utf-8">\n'
+    "<title>Animated Text Page</title>\n"
+    '<link rel="stylesheet" href="style.css">\n'
+    "</head>\n"
+    "<body>\n"
+    '<h1 class="animated-heading">Welcome to My Page</h1>\n'
+    '<p class="tagline">Simple text, gentle motion</p>\n'
+    "</body>\n"
+    "</html>\n"
+)
+
+DM_CSS_V1 = (
+    "body { background: #f5f5f5; font-family: 'Poppins', sans-serif; }\n"
+    ".animated-heading { color: #ff5733; "
+    "animation: fadeSlide 2s ease-in-out infinite alternate; }\n"
+    ".tagline { color: #2e86de; }\n"
+    "@keyframes fadeSlide { from { opacity: 0.4; } "
+    "to { opacity: 1; } }\n"
+)
+
+DM_RUN1_PAYLOAD = {
+    "files": [
+        {"path": "index.html", "content": DM_INDEX_V1},
+        {"path": "style.css", "content": DM_CSS_V1},
+    ],
+    "entrypoint": "index.html",
+}
+
+DM_INDEX_BAD = (
+    "<!DOCTYPE html>\n"
+    '<html lang="en">\n'
+    "<head>\n"
+    '<meta charset="utf-8">\n'
+    "<title>Animated Text Page</title>\n"
+    '<link rel="stylesheet" href="style.css">\n'
+    "</head>\n"
+    "<body>\n"
+    '<div class="shape circle"></div>\n'
+    '<div class="shape square"></div>\n'
+    "</body>\n"
+    "</html>\n"
+)
+
+DM_RUN2_BAD_PAYLOAD = {
+    "files": [
+        {"path": "index.html", "content": DM_INDEX_BAD},
+    ],
+    "entrypoint": "index.html",
+}
+
+DM_INDEX_FIXED = (
+    "<!DOCTYPE html>\n"
+    '<html lang="en">\n'
+    "<head>\n"
+    '<meta charset="utf-8">\n'
+    "<title>Animated Text Page</title>\n"
+    '<link rel="stylesheet" href="style.css">\n'
+    "</head>\n"
+    "<body>\n"
+    '<h1 class="animated-heading">Welcome to My Page</h1>\n'
+    '<p class="tagline">Simple text, gentle motion</p>\n'
+    '<div class="shape circle"></div>\n'
+    '<div class="shape square"></div>\n'
+    "</body>\n"
+    "</html>\n"
+)
+
+DM_RUN2_FIX_PAYLOAD = {
+    "files": [
+        {"path": "index.html", "content": DM_INDEX_FIXED},
+    ],
+    "entrypoint": "index.html",
+}
+
+DM_CSS_V3 = (
+    "body { background: #121212; font-family: 'Poppins', sans-serif; }\n"
+    ".animated-heading { color: #ff5733; "
+    "animation: fadeSlide 2s ease-in-out infinite alternate; }\n"
+    ".tagline { color: #2e86de; "
+    "animation: fadeSlide 3s ease-in-out infinite alternate; }\n"
+    ".shape { animation: spinPulse 4s linear infinite; }\n"
+    "@keyframes fadeSlide { from { opacity: 0.4; } "
+    "to { opacity: 1; } }\n"
+    "@keyframes spinPulse { from { transform: rotate(0deg); } "
+    "to { transform: rotate(360deg); } }\n"
+)
+
+DM_RUN3_PAYLOAD = {
+    "files": [
+        {"path": "index.html", "content": DM_INDEX_FIXED},
+        {"path": "style.css", "content": DM_CSS_V3},
+    ],
+    "entrypoint": "index.html",
 }
 
 # Payload for scenario nocomments: every file is full of comments,
@@ -1459,6 +1582,218 @@ def scenario_phases() -> list[str]:
     return failures
 
 
+def _install_payload_queue() -> dict:
+    """Patch the fake structured model to serve a QUEUE of payloads.
+
+    Like _install_dynamic_payload_factory, but every structured call
+    pops the next payload from a queue the scenario refills between
+    runs, and every prompt is captured. designmemory needs both:
+    run 2 makes TWO structured calls (the developer's bad edit,
+    then the corrective pass), and run 3's developer prompt is
+    inspected for the instruction history and locked design tokens.
+    """
+
+    import app.config as config
+    from langchain_core.runnables import RunnableLambda
+
+    holder: dict = {"queue": [], "prompts": []}
+
+    def fake_get_structured_llm(schema):
+        def build(prompt):
+            holder["prompts"].append(prompt)
+            payload = holder["queue"].pop(0)
+            return schema(**payload)
+
+        return RunnableLambda(build)
+
+    config.get_structured_llm = fake_get_structured_llm
+    return holder
+
+
+def scenario_designmemory() -> list[str]:
+    holder = _install_payload_queue()
+
+    from app.config import get_memory_path
+    from app.graph.workflow import workflow
+    from app.main import build_initial_state, prepare_build
+    from app.memory import record_run
+
+    workspace = Path(os.environ["MACA_WORKSPACE"])
+    failures = []
+
+    def run(request: str):
+        # The CLI's build path (app.main.main): prepare the run,
+        # invoke the graph, then record it in the project memory.
+        prep = prepare_build(request)
+        state = build_initial_state(
+            request,
+            edit_mode=prep.edit_mode,
+            existing_files=prep.existing_files,
+            project_memory=prep.project_memory,
+        )
+        result = workflow.invoke(state)
+        record_run(
+            request,
+            "edit" if prep.edit_mode else "fresh",
+            success=result.get("test_result", "").startswith(
+                "STATUS: PASSED"
+            ),
+        )
+        return prep, result
+
+    def memory() -> dict:
+        path = get_memory_path()
+        if not path.is_file():
+            return {}
+        return json.loads(path.read_text(encoding="utf-8"))
+
+    # -- Run 1: "create web page with text animation" (fresh) ----
+    holder["queue"][:] = [DM_RUN1_PAYLOAD]
+    prep1, result1 = run(DM_REQUEST_1)
+
+    if prep1.edit_mode is not False:
+        failures.append("run 1 should be a fresh build")
+    if not result1.get("test_result", "").startswith("STATUS: PASSED"):
+        failures.append(f"run 1 did not pass:\n{result1.get('test_result')}")
+    index_html = workspace / "index.html"
+    if not index_html.is_file():
+        failures.append("run 1 did not create index.html")
+    elif "Welcome to My Page" not in index_html.read_text(encoding="utf-8"):
+        failures.append("run 1 index.html lost its animated heading")
+    if not (workspace / "style.css").is_file():
+        failures.append("run 1 did not create style.css")
+
+    mem1 = memory()
+    history1 = mem1.get("history", [])
+    if [entry.get("request") for entry in history1] != [DM_REQUEST_1]:
+        failures.append(f"memory after run 1 holds wrong history: {history1}")
+    if [entry.get("mode") for entry in history1] != ["fresh"]:
+        failures.append(f"run 1 history mode is not 'fresh': {history1}")
+    if mem1.get("original_request") != DM_REQUEST_1:
+        failures.append(
+            f"memory original_request wrong: {mem1.get('original_request')!r}"
+        )
+    design1 = mem1.get("design", {})
+    if design1.get("background") != "#f5f5f5":
+        failures.append(f"run 1 design background not locked: {design1}")
+    if "#ff5733" not in design1.get("colors", []):
+        failures.append(f"run 1 palette colour missing from memory: {design1}")
+    if "Poppins" not in design1.get("fonts", []):
+        failures.append(f"run 1 font missing from memory: {design1}")
+
+    # -- Run 2: "add some shapes..." with a BAD developer edit ---
+    # The fake developer returns a redesigned page with the shapes
+    # but WITHOUT the heading text. The guard must fire, exactly one
+    # corrective pass must run, and the final page must hold both.
+    holder["queue"][:] = [DM_RUN2_BAD_PAYLOAD, DM_RUN2_FIX_PAYLOAD]
+    prompts_before_2 = len(holder["prompts"])
+    prep2, result2 = run(DM_REQUEST_2)
+
+    if prep2.edit_mode is not True:
+        failures.append("run 2 should be an edit run")
+    calls_2 = len(holder["prompts"]) - prompts_before_2
+    if calls_2 != 2:
+        failures.append(
+            "run 2 should make exactly 2 structured calls (developer "
+            f"+ one corrective pass), made {calls_2}"
+        )
+    if result2.get("preservation_retried") is not True:
+        failures.append(
+            "the preservation guard did not fire on run 2's bad edit "
+            f"(note: {result2.get('preservation_note')!r})"
+        )
+    if "corrective" not in result2.get("preservation_note", ""):
+        failures.append(
+            "preservation note does not record the corrective pass: "
+            f"{result2.get('preservation_note')!r}"
+        )
+    if result2.get("retry_count", 0) != 1:
+        failures.append(
+            "exactly one corrective pass should run, retry_count="
+            f"{result2.get('retry_count')}"
+        )
+    if not result2.get("test_result", "").startswith("STATUS: PASSED"):
+        failures.append(f"run 2 did not pass:\n{result2.get('test_result')}")
+    html2 = index_html.read_text(encoding="utf-8")
+    if "Welcome to My Page" not in html2:
+        failures.append("run 2 final page lost the original heading text")
+    if "Simple text, gentle motion" not in html2:
+        failures.append("run 2 final page lost the original tagline")
+    if "shape circle" not in html2:
+        failures.append("run 2 final page does not contain the added shapes")
+    if not (workspace / "style.css").is_file():
+        failures.append("run 2 lost the run 1 stylesheet")
+
+    mem2 = memory()
+    if [entry.get("request") for entry in mem2.get("history", [])] != [
+        DM_REQUEST_1,
+        DM_REQUEST_2,
+    ]:
+        failures.append(
+            f"memory after run 2 holds wrong history: {mem2.get('history')}"
+        )
+
+    # -- Run 3: a proper edit; the guard passes ------------------
+    holder["queue"][:] = [DM_RUN3_PAYLOAD]
+    prompts_before_3 = len(holder["prompts"])
+    prep3, result3 = run(DM_REQUEST_3)
+    run3_prompts = holder["prompts"][prompts_before_3:]
+
+    if prep3.edit_mode is not True:
+        failures.append("run 3 should be an edit run")
+    if len(run3_prompts) != 1:
+        failures.append(
+            "run 3 should make exactly 1 structured call (developer "
+            f"only, no corrective pass), made {len(run3_prompts)}"
+        )
+    developer_prompt_3 = run3_prompts[0] if run3_prompts else ""
+    for needle in (DM_REQUEST_1, DM_REQUEST_2, "#ff5733"):
+        if needle not in developer_prompt_3:
+            failures.append(
+                f"run 3 developer prompt is missing {needle!r} "
+                "(instruction history / locked design tokens)"
+            )
+    if result3.get("preservation_retried") is not False:
+        failures.append("the guard fired on run 3's proper edit")
+    if result3.get("preservation_note") != "PASSED":
+        failures.append(
+            f"run 3 preservation note should be PASSED: "
+            f"{result3.get('preservation_note')!r}"
+        )
+    if result3.get("retry_count", 0) != 0:
+        failures.append(
+            f"run 3 should need no debugger pass: "
+            f"retry_count={result3.get('retry_count')}"
+        )
+    if not result3.get("test_result", "").startswith("STATUS: PASSED"):
+        failures.append(f"run 3 did not pass:\n{result3.get('test_result')}")
+    css3 = (workspace / "style.css").read_text(encoding="utf-8")
+    if "#121212" not in css3:
+        failures.append("run 3 did not make the background dark")
+    html3 = index_html.read_text(encoding="utf-8")
+    if "Welcome to My Page" not in html3 or "shape circle" not in html3:
+        failures.append("run 3 final page lost the heading or the shapes")
+    if _backup_root(workspace).exists():
+        failures.append("a backup folder was created during the session")
+
+    mem3 = memory()
+    history3 = mem3.get("history", [])
+    if [entry.get("request") for entry in history3] != [
+        DM_REQUEST_1,
+        DM_REQUEST_2,
+        DM_REQUEST_3,
+    ]:
+        failures.append(f"memory history is wrong after 3 runs: {history3}")
+    if [entry.get("mode") for entry in history3] != ["fresh", "edit", "edit"]:
+        failures.append(f"memory history modes are wrong: {history3}")
+    if "#ff5733" not in mem3.get("design", {}).get("colors", []):
+        failures.append(
+            "final memory design lost run 1's palette colour: "
+            f"{mem3.get('design')}"
+        )
+    return failures
+
+
 SCENARIOS = {
     "web": scenario_web,
     "blocked": scenario_blocked,
@@ -1481,6 +1816,7 @@ SCENARIOS = {
     "freshstart": scenario_freshstart,
     "nocomments": scenario_nocomments,
     "phases": scenario_phases,
+    "designmemory": scenario_designmemory,
 }
 
 
@@ -1562,6 +1898,9 @@ def main() -> int:
         ("freshstart", FRESHSTART_PAYLOAD),
         ("nocomments", NOCOMMENTS_PAYLOAD),
         ("phases", WEB_PAYLOAD),
+        # Design memory serves its own payload queue (see
+        # _install_payload_queue), so no env payload.
+        ("designmemory", None),
     ):
         workspace = tempfile.mkdtemp(prefix=f"maca-{name}-")
         proc = _run_subprocess(

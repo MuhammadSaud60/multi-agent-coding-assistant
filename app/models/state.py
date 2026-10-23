@@ -37,4 +37,21 @@ class AgentState(TypedDict):
     # [{"path": ..., "content": ...}, ...]. Empty for fresh builds.
     existing_files: list
 
+    # The persistent project memory (see app/memory.py) as loaded
+    # when this run started: original request, full instruction
+    # history and locked design tokens. Edit runs hand it to the
+    # planner and developer so an edit builds on the conversation
+    # instead of redesigning from scratch. Empty for fresh builds.
+    project_memory: dict
+
+    # Preservation guard (edit runs only, see app/preservation.py):
+    # whether the one corrective pass has already been used, its
+    # outcome note for tests/logs, and the complaint a corrective
+    # debugger pass must answer ("" when there is none).
+    preservation_retried: bool
+
+    preservation_note: str
+
+    preservation_complaint: str
+
     final_response: str

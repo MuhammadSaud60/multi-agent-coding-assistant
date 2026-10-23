@@ -2,6 +2,7 @@ from pydantic import BaseModel, Field, field_validator
 
 from app.codeclean import strip_comments
 from app.config import get_structured_llm
+from app.memory import format_memory_context
 from app.models.state import AgentState
 from app.text_utils import to_text
 from app.tools.project_tools import validate_python_filename
@@ -235,6 +236,10 @@ def _developer_agent_impl(state: AgentState):
     """
 
     if edit_mode:
+        memory_block = format_memory_context(
+            state.get("project_memory"), request
+        )
+
         prompt = f"""
     You are a senior software developer.
 
@@ -248,9 +253,22 @@ def _developer_agent_impl(state: AgentState):
     Development plan:
     {plan}
 
+    {memory_block}
+
     Current project files (path, then full content):
 
     {_existing_files_block(existing_files)}
+
+    DO NOT:
+    - Do not remove or rewrite existing text, headings or elements
+      unless the instruction explicitly asks to remove them.
+    - Do not change the layout, colour palette, fonts or background
+      unless the instruction asks for that change.
+    - Do not rename existing CSS classes without updating every
+      file that uses them.
+    - Do not redesign. Make the SMALLEST change that satisfies the
+      instruction, based on the current file contents above: edit
+      those files, do not invent a new version of the project.
 
     How to respond:
     - Return the COMPLETE updated content of each file you change,

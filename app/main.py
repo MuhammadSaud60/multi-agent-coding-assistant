@@ -17,6 +17,7 @@ from app.config import get_workspace_root
 from app.direct_actions import handle_delete_request
 from app.graph.workflow import workflow
 from app.intent import is_edit_request, is_question, is_test_only_request
+from app.memory import load_memory, record_run
 from app.tools.workspace_tools import (
     ClearResult,
     clear_workspace,
@@ -29,6 +30,7 @@ def build_initial_state(
     *,
     edit_mode: bool = False,
     existing_files: list | None = None,
+    project_memory: dict | None = None,
 ) -> dict:
     """Build a complete, valid AgentState for a new run."""
     return {
@@ -47,6 +49,10 @@ def build_initial_state(
         "test_only": is_test_only_request(user_request),
         "edit_mode": edit_mode,
         "existing_files": list(existing_files or []),
+        "project_memory": dict(project_memory) if project_memory else {},
+        "preservation_retried": False,
+        "preservation_note": "",
+        "preservation_complaint": "",
         "final_response": "",
     }
 
@@ -60,11 +66,15 @@ class BuildPreparation(NamedTuple):
                     its contents for the developer.
     existing_files: [{"path", "content"}, ...] snapshot (edit only).
     cleared:        The clear_workspace() outcome (fresh builds).
+    project_memory: The stored project memory (edit only): the
+                    instruction history and locked design tokens the
+                    planner and developer are held to.
     """
 
     edit_mode: bool
     existing_files: list
     cleared: ClearResult | None
+    project_memory: dict | None = None
 
 
 def prepare_build(user_request: str) -> BuildPreparation:
@@ -73,17 +83,21 @@ def prepare_build(user_request: str) -> BuildPreparation:
     A follow-up that modifies the existing project ("add a footer",
     "make the circle bigger") runs in EDIT mode: the workspace is
     kept exactly as it is and its files are loaded for the
-    developer. Anything else — an empty workspace, a creation
-    request, an explicit "start over" — keeps the established
-    behaviour: the previous project is moved to a backup folder and
-    the build starts from an empty workspace.
+    developer, together with the persistent project memory. Anything
+    else — an empty workspace, a creation request, an explicit
+    "start over" — keeps the established behaviour: the previous
+    project is moved to a backup folder and the build starts from
+    an empty workspace.
     """
 
     existing = load_existing_files()
 
     if existing and is_edit_request(user_request):
         return BuildPreparation(
-            edit_mode=True, existing_files=existing, cleared=None
+            edit_mode=True,
+            existing_files=existing,
+            cleared=None,
+            project_memory=load_memory(),
         )
 
     return BuildPreparation(
@@ -188,6 +202,11 @@ def main(argv: list[str] | None = None) -> int:
         print(delete_outcome)
         return 0
 
+    # Only build/edit runs are recorded in the project memory;
+    # question, delete and run/test-only runs are not build
+    # instructions and never touch the history.
+    build_mode: str | None = None
+
     if is_test_only_request(user_request):
         # Run/test-only: the existing workspace IS the subject of the
         # request. It is kept exactly as it is.
@@ -204,6 +223,7 @@ def main(argv: list[str] | None = None) -> int:
         # timestamped backup folder and the build starts empty.
         prep = prepare_build(user_request)
         if prep.edit_mode:
+            build_mode = "edit"
             print(
                 f"[MAIN] Editing the existing project "
                 f"({len(prep.existing_files)} file(s) loaded; "
@@ -213,8 +233,10 @@ def main(argv: list[str] | None = None) -> int:
                 user_request,
                 edit_mode=True,
                 existing_files=prep.existing_files,
+                project_memory=prep.project_memory,
             )
         else:
+            build_mode = "fresh"
             cleared = prep.cleared
             if cleared is not None and cleared.backup_dir is not None:
                 print(
@@ -232,6 +254,17 @@ def main(argv: list[str] | None = None) -> int:
     print(f"[MAIN] Request: {user_request}")
 
     result = run_with_phases(initial_state)
+
+    if build_mode is not None:
+        # The persistent memory is what the NEXT run reads: a fresh
+        # build starts a new history, an edit extends this project's.
+        record_run(
+            user_request,
+            build_mode,
+            success=result.get("test_result", "").startswith(
+                "STATUS: PASSED"
+            ),
+        )
 
     # One short final line. The detailed tester output stays in the
     # run state; it is not dumped to the terminal.

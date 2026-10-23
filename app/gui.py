@@ -30,6 +30,7 @@ from app.direct_actions import handle_delete_request
 from app.graph.workflow import workflow
 from app.intent import is_question, is_test_only_request
 from app.main import build_initial_state, prepare_build
+from app.memory import record_run
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 WORKSPACE = get_workspace_root()
@@ -202,10 +203,15 @@ class RunManager:
             return
 
         edit_mode = False
+        # Only build/edit runs are recorded in the project memory;
+        # question and delete runs returned above, and a run/test-only
+        # run is not a build instruction either.
+        run_kind = ""
 
         if is_test_only_request(user_request):
             # Run/test-only: the existing workspace IS the subject of
             # the request. It is kept exactly as it is.
+            run_kind = "test"
             self.emit(
                 {
                     "type": "log",
@@ -225,6 +231,7 @@ class RunManager:
             prep = prepare_build(user_request)
             edit_mode = prep.edit_mode
             if prep.edit_mode:
+                run_kind = "edit"
                 message = (
                     "Editing the existing project "
                     f"({len(prep.existing_files)} file(s) loaded; "
@@ -234,8 +241,10 @@ class RunManager:
                     user_request,
                     edit_mode=True,
                     existing_files=prep.existing_files,
+                    project_memory=prep.project_memory,
                 )
             else:
+                run_kind = "fresh"
                 cleared = prep.cleared
                 if cleared is not None and cleared.backup_dir is not None:
                     message = (
@@ -306,6 +315,17 @@ class RunManager:
                         "url": preview_url,
                         "entrypoint": entrypoint,
                     }
+                )
+            if run_kind in ("fresh", "edit"):
+                # The persistent memory is what the NEXT run reads:
+                # a fresh build starts a new history, an edit
+                # extends this project's.
+                record_run(
+                    user_request,
+                    run_kind,
+                    success=summary.get("test_result", "").startswith(
+                        "STATUS: PASSED"
+                    ),
                 )
             self.last_summary = summary
             self.emit({"type": "run_finished", "summary": summary})

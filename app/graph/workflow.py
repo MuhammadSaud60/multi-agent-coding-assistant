@@ -10,6 +10,7 @@ from app.agents.tester import tester_agent
 from app.agents.debugger import debugger_agent
 from app.agents.workspace_action import workspace_action_agent
 from app.agents.answerer import answerer_agent
+from app.preservation import preservation_node, preservation_router
 
 
 graph = StateGraph(AgentState)
@@ -22,6 +23,11 @@ graph.add_node("tester", tester_agent)
 graph.add_node("debugger", debugger_agent)
 graph.add_node("workspace_action", workspace_action_agent)
 graph.add_node("answerer", answerer_agent)
+# Not an agent: the deterministic preservation guard. In edit mode
+# it checks that the files just written did not remove content the
+# user never asked to remove, and arms at most one corrective
+# debugger pass when they did.
+graph.add_node("preservation", preservation_node)
 
 
 graph.set_entry_point("supervisor")
@@ -42,7 +48,7 @@ def developer_router(state):
         print("\n[GRAPH] DEVELOPER PAYLOAD UNUSABLE → END")
         return "finish"
 
-    return "tester"
+    return "preservation"
 
 
 def test_router(state):
@@ -127,8 +133,23 @@ graph.add_conditional_edges(
     "developer",
     developer_router,
     {
-        "tester": "tester",
+        "preservation": "preservation",
         "finish": END
+    }
+)
+
+
+# The preservation guard sits between every file-writing pass and
+# the tester. Outside edit mode it is a pass-through. In edit mode a
+# first failure detours the run into ONE corrective debugger pass;
+# the router then brings it back here, and from here to the tester
+# whatever the guard says the second time (no loops).
+graph.add_conditional_edges(
+    "preservation",
+    preservation_router,
+    {
+        "debugger": "debugger",
+        "tester": "tester"
     }
 )
 
@@ -145,7 +166,7 @@ graph.add_conditional_edges(
 
 graph.add_edge(
     "debugger",
-    "tester"
+    "preservation"
 )
 
 
