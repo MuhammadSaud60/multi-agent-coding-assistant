@@ -28,17 +28,17 @@ def tester_agent(state: AgentState):
     # 1. Syntax check every Python file
     # -----------------------------------------
 
-    python_files = [
+    files = [
         file
         for file in files
         
     ]
 
     print(
-        f"[TESTER] Checking {len(python_files)} Python files..."
+        f"[TESTER] Checking {len(files)} Python files..."
     )
 
-    for filename in python_files:
+    for filename in files:
 
         file_path = PROJECT_DIR / filename
 
