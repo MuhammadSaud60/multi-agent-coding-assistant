@@ -1,5 +1,6 @@
 from app.config import get_llm
 from app.models.state import AgentState
+from app.text_utils import to_text
 
 llm = get_llm("supervisor")
 
@@ -38,7 +39,10 @@ def supervisor_agent(state: AgentState):
 
     response = llm.invoke(prompt)
 
-    decision = response.content.strip().lower()
+    # response.content is not always a string: LangChain 1.x models can
+    # return a list of content blocks, and .strip() on a list crashed
+    # the run with AttributeError. Coerce to plain text first.
+    decision = to_text(response.content).strip().lower()
 
     # The graph router only accepts "planner" or "developer"; anything
     # else the model returns is normalised here instead of crashing it.

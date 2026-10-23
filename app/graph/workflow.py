@@ -1,6 +1,7 @@
 from langgraph.graph import StateGraph, END
 
 from app.models.state import AgentState
+from app.text_utils import to_text
 
 from app.agents.supervisor import supervisor_agent
 from app.agents.planner import planner_agent
@@ -42,7 +43,10 @@ def developer_router(state):
 
 def test_router(state):
 
-    result = state.get("test_result", "")
+    # Coerced defensively: this router calls .startswith() on the
+    # value, so it must be text even if a state producer ever stores
+    # a list-shaped model response here.
+    result = to_text(state.get("test_result", ""))
     retry_count = state.get("retry_count", 0)
 
     if result.startswith("BLOCKED"):

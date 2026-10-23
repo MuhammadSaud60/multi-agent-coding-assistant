@@ -1,9 +1,28 @@
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from app.config import get_structured_llm
 from app.models.state import AgentState
+from app.text_utils import to_text
 from app.tools.project_tools import validate_python_filename
 from app.tools.workspace_tools import create_file
+
+
+def _coerce_text(value):
+    """Model payloads are not always strings: coerce before validation.
+
+    Small local models regularly return a file's content as a list of
+    lines (or content blocks) instead of one string. Without this,
+    pydantic rejects the whole payload and the run ends FAILED even
+    though the model produced usable code.
+    """
+
+    if isinstance(value, list) and value and all(
+        isinstance(item, str) for item in value
+    ):
+        # A list of lines: put the line breaks back.
+        return "\n".join(value)
+
+    return to_text(value)
 
 
 class GeneratedFile(BaseModel):
@@ -14,6 +33,16 @@ class GeneratedFile(BaseModel):
     content: str = Field(
         description="Complete contents of the file"
     )
+
+    @field_validator("path", mode="before")
+    @classmethod
+    def _path_as_text(cls, value):
+        return _coerce_text(value).strip()
+
+    @field_validator("content", mode="before")
+    @classmethod
+    def _content_as_text(cls, value):
+        return _coerce_text(value)
 
 
 class DeveloperOutput(BaseModel):
@@ -29,6 +58,11 @@ class DeveloperOutput(BaseModel):
             "page, e.g. index.html, never a Python file."
         )
     )
+
+    @field_validator("entrypoint", mode="before")
+    @classmethod
+    def _entrypoint_as_text(cls, value):
+        return _coerce_text(value).strip()
 
 
 structured_llm = get_structured_llm(DeveloperOutput)

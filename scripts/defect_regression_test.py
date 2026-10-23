@@ -5,7 +5,10 @@ through Python, destructive generated code executed by the tester,
 stale files polluting the workspace). Scenarios 6-8 cover the
 follow-up crash: a wrong entrypoint in the developer payload used to
 raise a ValueError that killed the whole run; it is now corrected
-when unambiguous and reported gracefully when it is not.
+when unambiguous and reported gracefully when it is not. Scenario 9
+covers the next crash Saud hit: a model whose message content is a
+LIST of content blocks (LangChain 1.x shape) died in the supervisor
+with AttributeError: 'list' object has no attribute 'strip'.
 
 Everything runs with the FAKE model provider (no Ollama server, no API
 key). Each scenario runs in a subprocess because the agents bind their
@@ -35,6 +38,13 @@ Scenarios:
   8. entryfix_empty
              A payload with zero files ends the run gracefully with
              an honest FAILED result instead of raising.
+  9. listcontent
+             Saud's exact "three boxes" webpage request, run against
+             fake models whose responses return LIST-typed content
+             (supervisor and planner messages are lists of content
+             blocks, and the developer payload's index.html content
+             is a list of lines). The run must complete with no
+             AttributeError and produce the web files.
 
 Usage (from the project root):
 
@@ -165,6 +175,67 @@ ENTRYFIX_MISSING_PAYLOAD = {
 ENTRYFIX_EMPTY_PAYLOAD = {
     "files": [],
     "entrypoint": "main.py",
+}
+
+# Saud's "three boxes" request. The index.html content is deliberately
+# a LIST of lines, the shape small models sometimes return for a
+# structured-output string field; the run only succeeds if the
+# developer coerces it back to text.
+LISTCONTENT_REQUEST = (
+    "create a webpage show three boxes of different colors apply "
+    "some good looking animation to the boxes using js"
+)
+
+LISTCONTENT_PLAN = (
+    "Plan: 1) index.html with three coloured boxes. "
+    "2) styles.css for the box colours. "
+    "3) script.js that animates the boxes."
+)
+
+LISTCONTENT_PAYLOAD = {
+    "files": [
+        {
+            "path": "index.html",
+            "content": [
+                "<!DOCTYPE html>",
+                '<html lang="en">',
+                "<head>",
+                '<meta charset="utf-8">',
+                "<title>Three Boxes</title>",
+                '<link rel="stylesheet" href="styles.css">',
+                "</head>",
+                "<body>",
+                '<div class="box red"></div>',
+                '<div class="box green"></div>',
+                '<div class="box blue"></div>',
+                '<script src="script.js"></script>',
+                "</body>",
+                "</html>",
+            ],
+        },
+        {
+            "path": "styles.css",
+            "content": (
+                ".box { width: 120px; height: 120px; margin: 16px; "
+                "display: inline-block; }\n"
+                ".red { background: #e74c3c; }\n"
+                ".green { background: #2ecc71; }\n"
+                ".blue { background: #3498db; }\n"
+            ),
+        },
+        {
+            "path": "script.js",
+            "content": (
+                "document.querySelectorAll('.box').forEach(function (box, i) {\n"
+                "  box.animate(\n"
+                "    [{ transform: 'translateY(0px)' }, { transform: 'translateY(-24px)' }],\n"
+                "    { duration: 900, delay: i * 200, iterations: Infinity, direction: 'alternate', easing: 'ease-in-out' }\n"
+                "  );\n"
+                "});\n"
+            ),
+        },
+    ],
+    "entrypoint": "index.html",
 }
 
 
@@ -324,6 +395,81 @@ def scenario_entryfix_empty() -> list[str]:
     return failures
 
 
+def scenario_listcontent() -> list[str]:
+    # The agents bind their models from app.config at import time, so
+    # the list-content fakes are installed BEFORE the workflow (and
+    # therefore the agents) are imported.
+    import app.config as config
+    from langchain_core.messages import AIMessage
+    from langchain_core.runnables import RunnableLambda
+
+    from app.text_utils import to_text
+
+    failures = []
+
+    # The helper itself, on every shape a model can produce.
+    if to_text("plain") != "plain":
+        failures.append("to_text changed a plain string")
+    if to_text(None) != "":
+        failures.append("to_text(None) is not ''")
+    blocks = [{"type": "text", "text": "pla"}, {"type": "text", "text": "nner"}]
+    if to_text(blocks) != "planner":
+        failures.append(f"to_text did not join content blocks: {to_text(blocks)!r}")
+    if to_text(["line one", "line two"], joiner="\n") != "line one\nline two":
+        failures.append("to_text did not join a list of lines")
+    if to_text([{"type": "image", "data": "..."}]) != "":
+        failures.append("to_text should ignore text-less blocks")
+
+    def fake_get_llm(role="generic", temperature=0):
+        text = {
+            "supervisor": "planner",
+            "planner": LISTCONTENT_PLAN,
+        }.get(role, "ok")
+        # LangChain 1.x content-block shape: a list, not a string.
+        return RunnableLambda(
+            lambda _prompt, _text=text: AIMessage(
+                content=[{"type": "text", "text": _text}]
+            )
+        )
+
+    def fake_get_structured_llm(schema):
+        payload = json.loads(os.environ["MACA_FAKE_FILES_JSON"])
+        return RunnableLambda(lambda _prompt: schema(**payload))
+
+    config.get_llm = fake_get_llm
+    config.get_structured_llm = fake_get_structured_llm
+
+    from app.graph.workflow import workflow
+    from app.main import build_initial_state
+
+    workspace = Path(os.environ["MACA_WORKSPACE"])
+    # Must not raise AttributeError: 'list' object has no attribute
+    # 'strip' (the supervisor) or fail validation on the list-typed
+    # file content (the developer).
+    result = workflow.invoke(build_initial_state(LISTCONTENT_REQUEST))
+    test_result = result.get("test_result", "")
+
+    plan = result.get("plan", "")
+    if not isinstance(plan, str):
+        failures.append(f"plan in state is not text: {type(plan).__name__}")
+    elif "three coloured boxes" not in plan:
+        failures.append(f"plan text lost in coercion: {plan!r}")
+    if not test_result.startswith("STATUS: PASSED"):
+        failures.append(f"expected PASSED, got:\n{test_result}")
+    if "not executed" not in test_result.lower():
+        failures.append("result does not say the project was not executed")
+    for rel in ("index.html", "styles.css", "script.js"):
+        if not (workspace / rel).is_file():
+            failures.append(f"missing generated file: {rel}")
+    if (workspace / "index.html").is_file():
+        html = (workspace / "index.html").read_text(encoding="utf-8")
+        if 'class="box red"' not in html:
+            failures.append("index.html lost its boxes during list coercion")
+        if html.lstrip().startswith("["):
+            failures.append("index.html looks like a raw list repr, not text")
+    return failures
+
+
 SCENARIOS = {
     "web": scenario_web,
     "blocked": scenario_blocked,
@@ -331,6 +477,7 @@ SCENARIOS = {
     "entryfix_web": scenario_entryfix_web,
     "entryfix_missing": scenario_entryfix_missing,
     "entryfix_empty": scenario_entryfix_empty,
+    "listcontent": scenario_listcontent,
 }
 
 
@@ -385,6 +532,7 @@ def main() -> int:
         ("entryfix_web", ENTRYFIX_WEB_PAYLOAD),
         ("entryfix_missing", ENTRYFIX_MISSING_PAYLOAD),
         ("entryfix_empty", ENTRYFIX_EMPTY_PAYLOAD),
+        ("listcontent", LISTCONTENT_PAYLOAD),
     ):
         workspace = tempfile.mkdtemp(prefix=f"maca-{name}-")
         proc = _run_subprocess(
