@@ -29,4 +29,12 @@ class AgentState(TypedDict):
 
     test_only: bool
 
+    # True when this run edits the project already in the workspace
+    # (a follow-up instruction) instead of building from scratch.
+    edit_mode: bool
+
+    # The workspace files as they stood when an edit run started:
+    # [{"path": ..., "content": ...}, ...]. Empty for fresh builds.
+    existing_files: list
+
     final_response: str

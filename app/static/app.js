@@ -246,6 +246,61 @@ function setTerminal(text, meta) {
   terminalEl.scrollTop = terminalEl.scrollHeight;
 }
 
+/* ------------------------------------------------------------------ */
+/* run phases                                                          */
+/*                                                                     */
+/* The chat and the terminal show ONLY the phase the run is in:        */
+/* Thinking (supervisor/planner), Building (developer/debugger),       */
+/* Testing (tester), then one final line: Done or Failed. The          */
+/* agents' detailed output (plans, tester reports) stays in the        */
+/* backend; it is never rendered here.                                 */
+/* ------------------------------------------------------------------ */
+
+const PHASE_BY_AGENT = {
+  supervisor: "Thinking",
+  planner: "Thinking",
+  developer: "Building",
+  debugger: "Building",
+  tester: "Testing",
+};
+
+let phaseTrail = [];
+let lastPhase = null;
+
+function renderTerminal() {
+  terminalEl.textContent = phaseTrail.join("\n");
+  terminalMetaEl.textContent = "";
+  terminalEl.scrollTop = terminalEl.scrollHeight;
+}
+
+function showPhase(phase) {
+  if (!phase || phase === lastPhase) return;
+  lastPhase = phase;
+  phaseTrail.push(phase);
+  const div = document.createElement("div");
+  div.className = "phase-line";
+  div.textContent = phase;
+  chatLogEl.appendChild(div);
+  chatLogEl.scrollTop = chatLogEl.scrollHeight;
+  renderTerminal();
+}
+
+function resetPhases() {
+  phaseTrail = [];
+  lastPhase = null;
+  renderTerminal();
+}
+
+function finishPhase(word) {
+  phaseTrail.push(word);
+  const div = document.createElement("div");
+  div.className = "phase-line final";
+  div.textContent = word;
+  chatLogEl.appendChild(div);
+  chatLogEl.scrollTop = chatLogEl.scrollHeight;
+  renderTerminal();
+}
+
 function setAgentDot(agent, state) {
   const dot = document.querySelector(`#agent-list li[data-agent="${agent}"] .agent-dot`);
   if (dot) dot.className = "agent-dot " + state;
@@ -298,30 +353,25 @@ function handleEvent(event) {
   switch (event.type) {
     case "run_started":
       resetAgents();
+      resetPhases();
       setRunning(true);
       runStatusEl.dataset.final = "";
       addMessage("user", "You", event.request);
-      setTerminal("", "run started");
       break;
     case "agent_started":
       setAgentDot(event.agent, "active");
+      showPhase(PHASE_BY_AGENT[event.agent]);
       break;
     case "agent": {
       setAgentDot(event.agent, "done");
-      const pre = event.plan
-        ? event.plan
-        : event.test_result && event.agent === "tester"
-          ? event.test_result
-          : null;
-      addMessage("agent", event.agent, event.message, pre);
+      /* No agent prose in the chat: only the phase lines above.
+         The developer finishing still refreshes the Explorer and
+         opens the first generated file. */
       if (event.agent === "developer" && event.files_created && event.files_created.length) {
         refreshTree().then(() => {
           const first = event.files_created.find((f) => f.endsWith(".py")) || event.files_created[0];
           if (first) openFile(first, null);
         });
-      }
-      if (event.agent === "tester" && event.test_result) {
-        setTerminal(event.test_result, event.test_result.startsWith("STATUS: PASSED") ? "tests passed" : "tests failed");
       }
       break;
     }
@@ -331,15 +381,20 @@ function handleEvent(event) {
       break;
     case "run_finished": {
       const s = event.summary || {};
-      const passed = (s.test_result || "").startsWith("STATUS: PASSED");
+      const result = s.test_result || "";
+      const passed = result.startsWith("STATUS: PASSED");
       runStatusEl.dataset.final = passed ? "done" : "error";
       runStatusEl.textContent = passed ? "passed" : "finished";
       runStatusEl.className = "status-pill " + (passed ? "done" : "error");
-      addMessage(
-        "system",
-        "Run complete",
-        passed ? "Tests passed." : "Run finished. Check the terminal for the test result."
-      );
+      if (passed) {
+        finishPhase("Done");
+      } else if (result.startsWith("STATUS:") || result.startsWith("BLOCKED")) {
+        finishPhase("Failed");
+      } else if (s.final_response) {
+        /* A question's answer or a direct action's outcome is the
+           run's result text, not agent chatter: show it. */
+        addMessage("agent", "Result", s.final_response);
+      }
       refreshTree();
       break;
     }
@@ -399,7 +454,10 @@ inputEl.addEventListener("keydown", (evt) => {
     }
     if (status.running) setRunning(true);
     if (status.last_summary) {
-      setTerminal(status.last_summary.test_result || "", "last run");
+      const last = status.last_summary.test_result || "";
+      if (last.startsWith("STATUS: PASSED")) phaseTrail = ["Done"];
+      else if (last.startsWith("STATUS:") || last.startsWith("BLOCKED")) phaseTrail = ["Failed"];
+      renderTerminal();
     }
   } catch {
     /* status is best-effort at startup */

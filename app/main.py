@@ -10,16 +10,26 @@ For the graphical interface see:  python -m app.gui
 
 import argparse
 import sys
+from typing import NamedTuple
 
 from app.agents.answerer import answer_question
 from app.config import get_workspace_root
 from app.direct_actions import handle_delete_request
 from app.graph.workflow import workflow
-from app.intent import is_question, is_test_only_request
-from app.tools.workspace_tools import clear_workspace
+from app.intent import is_edit_request, is_question, is_test_only_request
+from app.tools.workspace_tools import (
+    ClearResult,
+    clear_workspace,
+    load_existing_files,
+)
 
 
-def build_initial_state(user_request: str) -> dict:
+def build_initial_state(
+    user_request: str,
+    *,
+    edit_mode: bool = False,
+    existing_files: list | None = None,
+) -> dict:
     """Build a complete, valid AgentState for a new run."""
     return {
         "user_request": user_request,
@@ -35,8 +45,86 @@ def build_initial_state(user_request: str) -> dict:
         "retry_count": 0,
         "next_agent": "",
         "test_only": is_test_only_request(user_request),
+        "edit_mode": edit_mode,
+        "existing_files": list(existing_files or []),
         "final_response": "",
     }
+
+
+class BuildPreparation(NamedTuple):
+    """How a build run starts: edit the project, or build fresh.
+
+    edit_mode:      True for a follow-up instruction that modifies
+                    the project already in the workspace. The
+                    workspace is NOT cleared; existing_files holds
+                    its contents for the developer.
+    existing_files: [{"path", "content"}, ...] snapshot (edit only).
+    cleared:        The clear_workspace() outcome (fresh builds).
+    """
+
+    edit_mode: bool
+    existing_files: list
+    cleared: ClearResult | None
+
+
+def prepare_build(user_request: str) -> BuildPreparation:
+    """Decide how a build run starts, and prepare the workspace.
+
+    A follow-up that modifies the existing project ("add a footer",
+    "make the circle bigger") runs in EDIT mode: the workspace is
+    kept exactly as it is and its files are loaded for the
+    developer. Anything else — an empty workspace, a creation
+    request, an explicit "start over" — keeps the established
+    behaviour: the previous project is moved to a backup folder and
+    the build starts from an empty workspace.
+    """
+
+    existing = load_existing_files()
+
+    if existing and is_edit_request(user_request):
+        return BuildPreparation(
+            edit_mode=True, existing_files=existing, cleared=None
+        )
+
+    return BuildPreparation(
+        edit_mode=False,
+        existing_files=[],
+        cleared=clear_workspace(),
+    )
+
+
+# The only progress words the CLI prints while the graph runs: what
+# the user is watching is agents thinking, then building, then
+# testing. Mirrors the GUI's phase lines.
+_PHASE_BY_NODE = {
+    "supervisor": "Thinking",
+    "planner": "Thinking",
+    "developer": "Building",
+    "debugger": "Building",
+    "tester": "Testing",
+}
+
+
+def run_with_phases(initial_state: dict) -> dict:
+    """Invoke the workflow, printing each phase as it is entered.
+
+    Returns the merged final state (node updates applied in order,
+    exactly what workflow.invoke would return for these fields).
+    """
+
+    result = dict(initial_state)
+    last_phase = ""
+
+    for chunk in workflow.stream(initial_state, stream_mode="updates"):
+        for node, update in chunk.items():
+            if update:
+                result.update(update)
+            phase = _PHASE_BY_NODE.get(node, "")
+            if phase and phase != last_phase:
+                print(phase)
+                last_phase = phase
+
+    return result
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -107,38 +195,54 @@ def main(argv: list[str] | None = None) -> int:
             "[MAIN] Run/test-only request: keeping the existing "
             "workspace as-is (nothing cleared)."
         )
+        initial_state = build_initial_state(user_request)
     else:
-        # Start every build run from an empty workspace so files from
-        # previous runs cannot pollute this one. The previous project
-        # is not deleted: it is moved to a timestamped backup folder.
-        cleared = clear_workspace()
-        if cleared.backup_dir is not None:
+        # A follow-up that modifies the existing project edits it in
+        # place: no clearing, no backup, the developer works from the
+        # files that are already there. Any other build keeps the
+        # established behaviour: the previous project is moved to a
+        # timestamped backup folder and the build starts empty.
+        prep = prepare_build(user_request)
+        if prep.edit_mode:
             print(
-                f"[MAIN] Cleared workspace for the new run "
-                f"({cleared.moved} item(s) moved to backup: "
-                f"{cleared.backup_dir})."
+                f"[MAIN] Editing the existing project "
+                f"({len(prep.existing_files)} file(s) loaded; "
+                "workspace kept, nothing cleared)."
+            )
+            initial_state = build_initial_state(
+                user_request,
+                edit_mode=True,
+                existing_files=prep.existing_files,
             )
         else:
-            print(
-                "[MAIN] Cleared workspace for the new run "
-                "(workspace was already empty)."
-            )
+            cleared = prep.cleared
+            if cleared is not None and cleared.backup_dir is not None:
+                print(
+                    f"[MAIN] Cleared workspace for the new run "
+                    f"({cleared.moved} item(s) moved to backup: "
+                    f"{cleared.backup_dir})."
+                )
+            else:
+                print(
+                    "[MAIN] Cleared workspace for the new run "
+                    "(workspace was already empty)."
+                )
+            initial_state = build_initial_state(user_request)
 
     print(f"[MAIN] Request: {user_request}")
 
-    result = workflow.invoke(build_initial_state(user_request))
+    result = run_with_phases(initial_state)
 
+    # One short final line. The detailed tester output stays in the
+    # run state; it is not dumped to the terminal.
     print("\n================ RESULT ================")
-    if result.get("plan"):
-        print("\nPLAN:\n" + result["plan"])
-    print("\nFILES CREATED:")
-    for path in result.get("files_created", []):
-        print(f"  - {path}")
-    print("\nTEST RESULT:")
-    print(result.get("test_result") or "(no test result)")
-    if result.get("final_response"):
-        print("\nFINAL RESPONSE:")
-        print(result["final_response"])
+    test_result = result.get("test_result", "")
+    if test_result.startswith("STATUS: PASSED"):
+        print("STATUS: PASSED")
+    elif test_result.startswith("BLOCKED"):
+        print("STATUS: BLOCKED")
+    else:
+        print("STATUS: FAILED")
 
     return 0
 

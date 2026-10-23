@@ -25,6 +25,16 @@ path, or a build. is_question() therefore runs FIRST in every
 detector below: a question is classified before any command verb
 inside it gets a chance to match.
 
+Finally, build requests split in two. A FOLLOW-UP that modifies the
+project already in the workspace ("add some shapes", "make the
+circle bigger") is an EDIT: the workspace is kept and the developer
+works from the existing files. A request that explicitly starts
+over ("start over", "from scratch", "naya project") is a FRESH
+START and keeps the old behaviour. is_fresh_start_request() and
+is_edit_request() below draw that line for the entry points, which
+must decide before the graph runs whether the workspace may be
+cleared.
+
 Detection is deliberately rule-based rather than model-based: the
 entry points (CLI and GUI) must know the answer BEFORE the graph
 starts, because they decide whether the workspace may be cleared,
@@ -282,3 +292,162 @@ def is_delete_request(request) -> bool:
     """True when the request is a pure workspace-deletion request."""
 
     return parse_delete_request(request) is not None
+
+
+# ----------------------------------------------------------------------
+# Fresh-start and edit requests
+# ----------------------------------------------------------------------
+
+# Phrasing that asks for the existing project to be thrown away and
+# a brand-new one built in its place. These keep the old behaviour
+# (previous project moved to the backup folder, build from scratch)
+# even when the workspace is occupied.
+_FRESH_START_PHRASES = (
+    "new project",
+    "start over",
+    "start fresh",
+    "fresh start",
+    "from scratch",
+    # Roman Urdu: "make it again from the start".
+    "naya project",
+    "dobara se banao",
+    "phir se banao",
+)
+
+_FRESH_START_WORDS = {
+    "scrap",
+    "discard",
+}
+
+# Verbs that change work that already exists rather than create new
+# work. A follow-up instruction ("add some shapes", "fix the layout",
+# "update the title") is an EDIT of the project in the workspace:
+# clearing it and regenerating from scratch destroys the very thing
+# the user is asking to change, which is the second-instruction bug
+# these detectors exist to prevent.
+_CHANGE_VERBS = {
+    "add",
+    "update",
+    "change",
+    "modify",
+    "fix",
+    "move",
+    "resize",
+    "rename",
+    "replace",
+    "adjust",
+    "tweak",
+    "improve",
+    "extend",
+    "append",
+    "insert",
+    "increase",
+    "decrease",
+    "enlarge",
+    "shrink",
+    # Not a pure delete by the time this detector runs (the delete
+    # flow classifies first and disqualifies itself above), so a
+    # "remove" here is part of a build: "remove the footer and add
+    # a header" edits the existing page.
+    "remove",
+}
+
+# Comparative adjectives: "make the circle bigger" names no change
+# verb, but the comparative only makes sense against the existing
+# project.
+_COMPARATIVES = {
+    "bigger",
+    "smaller",
+    "larger",
+    "faster",
+    "slower",
+    "darker",
+    "lighter",
+    "brighter",
+    "wider",
+    "narrower",
+    "taller",
+    "shorter",
+    "longer",
+    "thicker",
+    "thinner",
+}
+
+# (Requests whose only signal is a creation verb — "build a small
+# website", "create a second script" — fall through to False below:
+# a fresh build, not an edit, even when the workspace happens to be
+# occupied. The entry points keep the established behaviour for
+# them: back the old project up, build anew.)
+
+
+def is_fresh_start_request(request) -> bool:
+    """True when the request explicitly asks to start over.
+
+    "start over and make a new project", "build it from scratch",
+    "scrap this" — the previous project is backed up and the build
+    starts from an empty workspace, exactly as builds always did.
+    A question is never a fresh-start order.
+    """
+
+    if is_question(request):
+        return False
+
+    text = to_text(request).lower()
+
+    if any(phrase in text for phrase in _FRESH_START_PHRASES):
+        return True
+
+    words = re.findall(r"[a-z']+", text)
+
+    return any(word in _FRESH_START_WORDS for word in words)
+
+
+def is_edit_request(request) -> bool:
+    """True when a build request modifies the existing project.
+
+    The signal is modification language: a change verb ("add",
+    "update", "fix", "rename"), a comparative ("make the circle
+    bigger"), or "make" aimed at an existing thing ("make it
+    faster", "make the header blue"). Creation-only requests
+    ("build a small website") and explicit fresh starts are NOT
+    edits, and neither are questions, run/test-only requests or
+    pure deletes — those flows are classified before this detector
+    is ever consulted, and each of them disqualifies itself here
+    too so the helper is safe to call standalone.
+    """
+
+    if is_question(request):
+        return False
+
+    if is_fresh_start_request(request):
+        return False
+
+    if is_test_only_request(request):
+        return False
+
+    if is_delete_request(request):
+        return False
+
+    words = re.findall(r"[a-z']+", to_text(request).lower())
+
+    if not words:
+        return False
+
+    if any(
+        word in _CHANGE_VERBS or word in _COMPARATIVES for word in words
+    ):
+        return True
+
+    # "make the circle bigger" / "make it faster": "make" pointed at
+    # a definite existing thing is a change, not a creation.
+    if "make" in words:
+        index = words.index("make")
+        if index + 1 < len(words) and words[index + 1] in {
+            "the",
+            "it",
+            "this",
+            "that",
+        }:
+            return True
+
+    return False

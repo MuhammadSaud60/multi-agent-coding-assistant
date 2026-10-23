@@ -204,6 +204,8 @@ html, body {
 }
 #chat h2 { margin: 0 0 8px 0; font-size: 11px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; }
 #chat-log { flex: 1; overflow-y: auto; padding-right: 4px; }
+.phase-line { margin-bottom: 10px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; color: var(--text-dim); }
+.phase-line.final { color: var(--green); font-weight: 600; }
 .msg { margin-bottom: 10px; line-height: 1.45; word-wrap: break-word; }
 .msg .who { font-weight: 600; font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; display: block; margin-bottom: 2px; }
 .msg.user .who { color: var(--accent); }

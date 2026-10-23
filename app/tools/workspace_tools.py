@@ -127,6 +127,73 @@ def clear_workspace() -> ClearResult:
     return ClearResult(moved=moved, backup_dir=backup_dir)
 
 
+# Directories that never hold project source: caches, VCS metadata
+# and virtual environments. Mirrors the tester's scan rules so every
+# part of the app agrees on what "the project files" are.
+_SKIP_DIR_NAMES = {
+    "__pycache__",
+    ".git",
+    ".venv",
+    "venv",
+    "node_modules",
+}
+
+
+def list_project_files() -> list[str]:
+    """The project files currently in the workspace, relative paths.
+
+    Sorted, forward slashes, cache/VCS/virtualenv directories and
+    dot-directories excluded.
+    """
+
+    if not PROJECT_DIR.is_dir():
+        return []
+
+    found = []
+
+    for path in PROJECT_DIR.rglob("*"):
+
+        if not path.is_file():
+            continue
+
+        parts = path.relative_to(PROJECT_DIR).parts
+
+        if any(
+            part in _SKIP_DIR_NAMES or part.startswith(".")
+            for part in parts[:-1]
+        ):
+            continue
+
+        found.append("/".join(parts))
+
+    return sorted(found)
+
+
+def load_existing_files() -> list[dict[str, str]]:
+    """Snapshot of the current project: [{"path", "content"}, ...].
+
+    This is what an EDIT run hands to the developer (and debugger):
+    the follow-up instruction is applied to THESE files, not to a
+    blank workspace. Files that cannot be read are skipped rather
+    than failing the snapshot.
+    """
+
+    snapshot = []
+
+    for relative in list_project_files():
+
+        try:
+            content = safe_path(relative).read_text(
+                encoding="utf-8", errors="replace"
+            )
+        except OSError:
+            continue
+
+        snapshot.append({"path": relative, "content": content})
+
+    return snapshot
+
+
 @tool
 def list_files() -> list[str]:
     """

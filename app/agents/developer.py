@@ -1,10 +1,11 @@
 from pydantic import BaseModel, Field, field_validator
 
+from app.codeclean import strip_comments
 from app.config import get_structured_llm
 from app.models.state import AgentState
 from app.text_utils import to_text
 from app.tools.project_tools import validate_python_filename
-from app.tools.workspace_tools import create_file
+from app.tools.workspace_tools import create_file, delete_file
 
 
 def _coerce_text(value):
@@ -59,10 +60,33 @@ class DeveloperOutput(BaseModel):
         )
     )
 
+    files_to_delete: list[str] = Field(
+        default=[],
+        description=(
+            "Existing project files to remove (edit mode only). Leave "
+            "empty unless the requested change genuinely removes a file."
+        ),
+    )
+
     @field_validator("entrypoint", mode="before")
     @classmethod
     def _entrypoint_as_text(cls, value):
         return _coerce_text(value).strip()
+
+    @field_validator("files_to_delete", mode="before")
+    @classmethod
+    def _files_to_delete_as_list(cls, value):
+        if value is None:
+            return []
+        if isinstance(value, str):
+            return [value] if value.strip() else []
+        if isinstance(value, list):
+            return [
+                text
+                for text in (_coerce_text(item).strip() for item in value)
+                if text
+            ]
+        return []
 
 
 structured_llm = get_structured_llm(DeveloperOutput)
@@ -162,26 +186,34 @@ def _unusable_payload(reason: str, files_created: list[str]) -> dict:
     }
 
 
+def _existing_files_block(existing_files: list) -> str:
+    """Render the current project files for an edit-mode prompt."""
+
+    chunks = []
+
+    for item in existing_files:
+        chunks.append(
+            f"----- {item.get('path', '')} -----\n{item.get('content', '')}"
+        )
+
+    return "\n\n".join(chunks)
+
+
 def _developer_agent_impl(state: AgentState):
 
     print("\n[DEVELOPER] Generating implementation...")
 
     request = state["user_request"]
     plan = state.get("plan", "")
+    edit_mode = bool(state.get("edit_mode"))
+    existing_files = state.get("existing_files", []) if edit_mode else []
+    existing_paths = [item.get("path", "") for item in existing_files]
 
-    prompt = f"""
-    You are a senior software developer.
-
-    User request:
-    {request}
-
-    Development plan:
-    {plan}
-
-    Create every file required to complete the task.
-
+    shared_rules = """
     Rules:
     - Return complete working file contents.
+    - Write code without any comments. No line comments, no block
+      comments, no docstring-style explanations inside the code.
     - Write every file properly formatted: real newlines and
       indentation, exactly as a human would save it. NEVER compress
       code onto a single line. This matters most for Python, where a
@@ -199,13 +231,56 @@ def _developer_agent_impl(state: AgentState):
       - Website (HTML/CSS/JS): the entrypoint is the HTML page
         (for example index.html). Do NOT invent a Python file such as
         main.py just to act as an entrypoint for a web project.
-    - The entrypoint must be one of the files you return.
     - Do not invent an entrypoint that does not exist.
+    """
+
+    if edit_mode:
+        prompt = f"""
+    You are a senior software developer.
+
+    This project ALREADY EXISTS in the workspace. The user is asking
+    for a CHANGE to it, not a new project. Apply only the requested
+    change and keep everything else exactly as it is.
+
+    User request:
+    {request}
+
+    Development plan:
+    {plan}
+
+    Current project files (path, then full content):
+
+    {_existing_files_block(existing_files)}
+
+    How to respond:
+    - Return the COMPLETE updated content of each file you change,
+      plus the complete content of any new file you add.
+    - Files you do not return stay exactly as they are; do not
+      return unchanged files.
+    - If the change genuinely removes a file, list its path in
+      files_to_delete; otherwise leave files_to_delete empty.
+    - The entrypoint must be one of the project's files after your
+      change (an existing file or one you return).
+    {shared_rules}
+    """
+    else:
+        prompt = f"""
+    You are a senior software developer.
+
+    User request:
+    {request}
+
+    Development plan:
+    {plan}
+
+    Create every file required to complete the task.
+    {shared_rules}
+    - The entrypoint must be one of the files you return.
     """
 
     result = structured_llm.invoke(prompt)
 
-    files_created = []
+    written = []
 
     for file in result.files:
 
@@ -228,10 +303,12 @@ def _developer_agent_impl(state: AgentState):
             f"[DEVELOPER] Creating file: {file.path}"
         )
 
+        # Generated code carries no comments: strip deterministically
+        # here, whatever the model produced (see app/codeclean.py).
         create_result = create_file.invoke(
             {
                 "filename": file.path,
-                "content": file.content
+                "content": strip_comments(file.path, file.content),
             }
         )
 
@@ -239,16 +316,55 @@ def _developer_agent_impl(state: AgentState):
             f"[DEVELOPER] {create_result}"
         )
 
-        files_created.append(file.path)
+        written.append(file.path)
 
-    # Payload validation: the entrypoint must be one of the files just
-    # created, and it must match the project type. Small models get
+    if edit_mode:
+        # Merge, never replace: the returned files are written over
+        # the existing project, only files_to_delete are removed,
+        # and every other existing file stays byte-identical.
+        deleted = []
+
+        for path in result.files_to_delete:
+            if path in written:
+                continue
+            try:
+                outcome = delete_file.invoke({"filename": path})
+            except ValueError as exc:
+                print(f"[DEVELOPER] Skipping delete of {path}: {exc}")
+                continue
+            print(f"[DEVELOPER] {outcome}")
+            if outcome.startswith("Deleted:"):
+                deleted.append(path)
+
+        files_created = [
+            path
+            for path in existing_paths
+            if path not in deleted and path not in written
+        ] + written
+    else:
+        files_created = written
+
+    # Payload validation: the entrypoint must be one of the project
+    # files, and it must match the project type. Small models get
     # this wrong often (a main.py entrypoint for a website, or a file
     # that was never generated), so an unambiguous mismatch is
     # corrected here instead of raising and killing the run.
     entrypoint, note_or_reason = _resolve_entrypoint(
         result.entrypoint, files_created
     )
+
+    if entrypoint is None and edit_mode:
+        # The change may not have touched the entrypoint at all; the
+        # existing project's own entrypoint still applies.
+        from app.agents.tester import pick_workspace_entrypoint
+
+        candidate = pick_workspace_entrypoint(files_created)
+
+        if candidate:
+            entrypoint = candidate
+            note_or_reason = (
+                f"Entrypoint kept from the existing project: {candidate}"
+            )
 
     if entrypoint is None:
         return _unusable_payload(note_or_reason, files_created)

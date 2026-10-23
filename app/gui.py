@@ -29,8 +29,7 @@ from app.config import get_workspace_root
 from app.direct_actions import handle_delete_request
 from app.graph.workflow import workflow
 from app.intent import is_question, is_test_only_request
-from app.main import build_initial_state
-from app.tools.workspace_tools import clear_workspace
+from app.main import build_initial_state, prepare_build
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 WORKSPACE = get_workspace_root()
@@ -202,6 +201,8 @@ class RunManager:
             self.emit({"type": "status", "status": self.status()})
             return
 
+        edit_mode = False
+
         if is_test_only_request(user_request):
             # Run/test-only: the existing workspace IS the subject of
             # the request. It is kept exactly as it is.
@@ -214,22 +215,40 @@ class RunManager:
                     ),
                 }
             )
+            initial_state = build_initial_state(user_request)
         else:
-            # Start every build run from an empty workspace so files
-            # from previous runs cannot pollute this one. The previous
-            # project is not deleted: it is moved to a backup folder.
-            cleared = clear_workspace()
-            if cleared.backup_dir is not None:
+            # A follow-up that modifies the existing project edits
+            # it in place: no clearing, no backup, the developer
+            # works from the files already there. Any other build
+            # keeps the established behaviour: the previous project
+            # is moved to a backup folder and the build starts empty.
+            prep = prepare_build(user_request)
+            edit_mode = prep.edit_mode
+            if prep.edit_mode:
                 message = (
-                    "Workspace cleared for the new run "
-                    f"({cleared.moved} item(s) moved to backup: "
-                    f"{cleared.backup_dir})."
+                    "Editing the existing project "
+                    f"({len(prep.existing_files)} file(s) loaded; "
+                    "workspace kept, nothing cleared)."
+                )
+                initial_state = build_initial_state(
+                    user_request,
+                    edit_mode=True,
+                    existing_files=prep.existing_files,
                 )
             else:
-                message = (
-                    "Workspace cleared for the new run "
-                    "(workspace was already empty)."
-                )
+                cleared = prep.cleared
+                if cleared is not None and cleared.backup_dir is not None:
+                    message = (
+                        "Workspace cleared for the new run "
+                        f"({cleared.moved} item(s) moved to backup: "
+                        f"{cleared.backup_dir})."
+                    )
+                else:
+                    message = (
+                        "Workspace cleared for the new run "
+                        "(workspace was already empty)."
+                    )
+                initial_state = build_initial_state(user_request)
             self.emit({"type": "log", "message": message})
 
         summary = {
@@ -238,11 +257,12 @@ class RunManager:
             "entrypoint": "",
             "test_result": "",
             "final_response": "",
+            "edit_mode": edit_mode,
         }
 
         try:
             for chunk in workflow.stream(
-                build_initial_state(user_request), stream_mode="updates"
+                initial_state, stream_mode="updates"
             ):
                 for node, update in chunk.items():
                     if node not in self.agent_status:

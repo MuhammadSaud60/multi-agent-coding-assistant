@@ -103,6 +103,29 @@ Scenarios:
              file 404s, and path-traversal attempts never return
              the application's own source. /api/preview-info points
              at the page.
+ 22. editfollowup
+             Two GUI runs in one workspace. Run 1 builds a web page
+             (index.html + style.css). Run 2, "add a footer to the
+             page", with the fake developer returning ONLY an updated
+             index.html, must EDIT the existing project: edit_mode
+             is true, no backup/clear happens, style.css stays
+             byte-identical, and index.html gains the footer. This
+             is the second-instruction defect Saud hit live.
+ 23. freshstart
+             "start over and make a new project" on an occupied
+             workspace keeps the old behaviour: edit_mode is false,
+             the old project is moved to the backup folder, and the
+             new project is built from scratch.
+ 24. nocomments
+             The fake developer returns files full of comments (a
+             Python file with line comments AND a string containing
+             '#', an HTML file with a comment, a CSS file with
+             block comments). The written files must contain no
+             comments, and the '#' string must survive intact.
+ 25. phases The GUI driven in a real browser (Playwright): the
+             chat stream and terminal show only the phase lines
+             Thinking / Building / Testing and a final Done, and
+             never the verbose tester dump ("MODE:", "CHECKS:").
 
 Note on scenario 2 (blocked): its request used to be the literal
 "delete all files", which is now a direct workspace action (scenario
@@ -262,6 +285,114 @@ QUESTIONBUILD_PAYLOAD = {
         {"path": "main.py", "content": "print('built by the agents')\n"},
     ],
     "entrypoint": "main.py",
+}
+
+# Payloads for scenario editfollowup: run 1 builds the page, run 2
+# returns ONLY the updated index.html (with a footer added). The
+# scenario swaps the payload between runs through a payload file,
+# because the fake structured model is bound once per process.
+EDIT_V1_PAYLOAD = {
+    "files": [
+        {
+            "path": "index.html",
+            "content": (
+                "<!DOCTYPE html>\n"
+                '<html lang="en">\n'
+                "<head>\n"
+                '<meta charset="utf-8">\n'
+                "<title>Editable Page</title>\n"
+                '<link rel="stylesheet" href="style.css">\n'
+                "</head>\n"
+                "<body>\n"
+                "<h1>Editable page</h1>\n"
+                "</body>\n"
+                "</html>\n"
+            ),
+        },
+        {
+            "path": "style.css",
+            "content": (
+                "body { font-family: sans-serif; }\n"
+                "h1 { color: #333; }\n"
+            ),
+        },
+    ],
+    "entrypoint": "index.html",
+}
+
+EDIT_V2_PAYLOAD = {
+    "files": [
+        {
+            "path": "index.html",
+            "content": (
+                "<!DOCTYPE html>\n"
+                '<html lang="en">\n'
+                "<head>\n"
+                '<meta charset="utf-8">\n'
+                "<title>Editable Page</title>\n"
+                '<link rel="stylesheet" href="style.css">\n'
+                "</head>\n"
+                "<body>\n"
+                "<h1>Editable page</h1>\n"
+                "<footer>Added by the follow-up</footer>\n"
+                "</body>\n"
+                "</html>\n"
+            ),
+        },
+    ],
+    "entrypoint": "index.html",
+}
+
+# Payload for scenario freshstart: the brand-new project that
+# replaces the existing one.
+FRESHSTART_PAYLOAD = {
+    "files": [
+        {"path": "main.py", "content": "print('brand new project')\n"},
+    ],
+    "entrypoint": "main.py",
+}
+
+# Payload for scenario nocomments: every file is full of comments,
+# and the Python file also carries a '#' inside a string literal
+# that must survive the deterministic comment stripper.
+NOCOMMENTS_PAYLOAD = {
+    "files": [
+        {
+            "path": "index.html",
+            "content": (
+                "<!DOCTYPE html>\n"
+                "<!-- page comment -->\n"
+                '<html lang="en">\n'
+                "<head>\n"
+                '<meta charset="utf-8">\n'
+                "<title>No Comments</title>\n"
+                '<link rel="stylesheet" href="style.css">\n'
+                "</head>\n"
+                "<body>\n"
+                "<h1>Clean page</h1>\n"
+                "</body>\n"
+                "</html>\n"
+            ),
+        },
+        {
+            "path": "style.css",
+            "content": (
+                "/* banner comment */\n"
+                "body { color: #222; /* inline comment */ }\n"
+            ),
+        },
+        {
+            "path": "main.py",
+            "content": (
+                "# header comment\n"
+                'LABEL = "keep # this"  # trailing comment\n'
+                "\n"
+                "# standalone comment\n"
+                "print(LABEL)\n"
+            ),
+        },
+    ],
+    "entrypoint": "index.html",
 }
 
 # The pre-existing Python project for scenario runexisting.
@@ -1029,6 +1160,305 @@ def scenario_deletegui() -> list[str]:
     return failures
 
 
+def _install_dynamic_payload_factory() -> Path:
+    """Patch the fake structured model to read its payload per call.
+
+    The developer's structured model is built once, at import time,
+    from the environment payload — one payload per process. The
+    edit-follow-up scenario needs run 2 to return a DIFFERENT
+    payload from run 1 inside one process, so the factory is patched
+    (before any agent module is imported, exactly as scenario
+    listcontent patches config) to read the payload from a JSON file
+    the scenario rewrites between runs.
+    """
+
+    import app.config as config
+    from langchain_core.runnables import RunnableLambda
+
+    payload_path = (
+        Path(tempfile.mkdtemp(prefix="maca-payload-")) / "payload.json"
+    )
+
+    def fake_get_structured_llm(schema):
+        def build(_prompt):
+            payload = json.loads(payload_path.read_text(encoding="utf-8"))
+            return schema(**payload)
+
+        return RunnableLambda(build)
+
+    config.get_structured_llm = fake_get_structured_llm
+    return payload_path
+
+
+def scenario_editfollowup() -> list[str]:
+    payload_path = _install_dynamic_payload_factory()
+
+    from app.gui import RunManager
+
+    workspace = Path(os.environ["MACA_WORKSPACE"])
+    failures = []
+
+    # Run 1: a normal creation request builds the page.
+    payload_path.write_text(json.dumps(EDIT_V1_PAYLOAD), encoding="utf-8")
+    manager = RunManager()
+    manager._run("create a webpage with a heading")
+
+    summary1 = manager.last_summary or {}
+    if summary1.get("edit_mode") is not False:
+        failures.append(
+            f"run 1 should be a fresh build: edit_mode={summary1.get('edit_mode')!r}"
+        )
+    if not summary1.get("test_result", "").startswith("STATUS: PASSED"):
+        failures.append(f"run 1 did not pass:\n{summary1.get('test_result')}")
+    if not (workspace / "index.html").is_file():
+        failures.append("run 1 did not create index.html")
+    if (workspace / "index.html").is_file() and "<footer>" in (
+        workspace / "index.html"
+    ).read_text(encoding="utf-8"):
+        failures.append("run 1 index.html already has a footer")
+    css_before = (workspace / "style.css").read_bytes()
+    events_before = len(manager.events)
+
+    # Run 2: the follow-up. The fake developer returns ONLY the
+    # updated index.html; style.css is not part of the payload.
+    payload_path.write_text(json.dumps(EDIT_V2_PAYLOAD), encoding="utf-8")
+    manager._run("add a footer to the page")
+
+    summary2 = manager.last_summary or {}
+    if summary2.get("edit_mode") is not True:
+        failures.append(
+            f"run 2 was not an edit run: edit_mode={summary2.get('edit_mode')!r}"
+        )
+    if not summary2.get("test_result", "").startswith("STATUS: PASSED"):
+        failures.append(f"run 2 did not pass:\n{summary2.get('test_result')}")
+    run2_events = manager.events[events_before:]
+    if any(
+        event.get("type") == "log"
+        and "Workspace cleared" in event.get("message", "")
+        for event in run2_events
+    ):
+        failures.append("run 2 cleared the workspace (backup-and-rebuild path)")
+    if not any(
+        event.get("type") == "log"
+        and "Editing the existing project" in event.get("message", "")
+        for event in run2_events
+    ):
+        failures.append("run 2 did not announce edit mode in its log")
+    if _backup_root(workspace).exists():
+        failures.append("a backup folder was created by the edit run")
+    if (workspace / "style.css").read_bytes() != css_before:
+        failures.append("style.css changed during the edit run (must be byte-identical)")
+    html_after = (workspace / "index.html").read_text(encoding="utf-8")
+    if "<footer>Added by the follow-up</footer>" not in html_after:
+        failures.append("index.html does not contain the added footer")
+    if "<h1>Editable page</h1>" not in html_after:
+        failures.append("the edit lost the existing page content")
+    return failures
+
+
+def scenario_freshstart() -> list[str]:
+    from app.gui import RunManager
+
+    workspace = Path(os.environ["MACA_WORKSPACE"])
+    _populate(
+        workspace,
+        {
+            "index.html": EXISTING_INDEX_HTML,
+            "styles.css": "body { font-family: sans-serif; }\n",
+        },
+    )
+
+    manager = RunManager()
+    manager._run("start over and make a new project")
+    summary = manager.last_summary or {}
+
+    failures = []
+    if summary.get("edit_mode") is not False:
+        failures.append(
+            f"fresh start ran in edit mode: edit_mode={summary.get('edit_mode')!r}"
+        )
+    if (workspace / "index.html").exists():
+        failures.append("the old index.html is still in the workspace")
+    if not (workspace / "main.py").is_file():
+        failures.append("the new project's main.py was not created")
+    archived = sorted(_backup_root(workspace).glob("*/index.html"))
+    if not archived:
+        failures.append("the old project was not moved to the backup folder")
+    if not summary.get("test_result", "").startswith("STATUS: PASSED"):
+        failures.append(f"fresh start run did not pass:\n{summary.get('test_result')}")
+    return failures
+
+
+def scenario_nocomments() -> list[str]:
+    from app.graph.workflow import workflow
+    from app.main import build_initial_state
+
+    workspace = Path(os.environ["MACA_WORKSPACE"])
+    result = workflow.invoke(build_initial_state("build a small website"))
+    test_result = result.get("test_result", "")
+
+    failures = []
+    if not test_result.startswith("STATUS: PASSED"):
+        failures.append(f"expected PASSED, got:\n{test_result}")
+
+    html = (workspace / "index.html").read_text(encoding="utf-8")
+    if "<!--" in html or "page comment" in html:
+        failures.append(f"HTML comment survived:\n{html}")
+
+    css = (workspace / "style.css").read_text(encoding="utf-8")
+    if "/*" in css or "comment" in css:
+        failures.append(f"CSS comment survived:\n{css}")
+
+    python = (workspace / "main.py").read_text(encoding="utf-8")
+    for marker in ("header comment", "trailing comment", "standalone comment"):
+        if marker in python:
+            failures.append(f"Python comment survived ({marker}):\n{python}")
+    if '"keep # this"' not in python:
+        failures.append(
+            f"the '#' string literal was damaged by stripping:\n{python}"
+        )
+    try:
+        compile(python, "main.py", "exec")
+    except SyntaxError as exc:
+        failures.append(f"stripped main.py no longer compiles: {exc}")
+    return failures
+
+
+_PHASES_DRIVER = '''
+import json
+import sys
+
+from playwright.sync_api import sync_playwright
+
+url = sys.argv[1]
+
+with sync_playwright() as pw:
+    browser = pw.chromium.launch()
+    page = browser.new_page()
+    page.goto(url)
+    page.fill("#request-input", "build a small website")
+    page.click("#run-button")
+    page.wait_for_function(
+        "document.querySelector('#chat-log').innerText.includes('Done')",
+        timeout=120000,
+    )
+    data = {
+        "chat": page.inner_text("#chat-log"),
+        "terminal": page.inner_text("#terminal"),
+        "body": page.inner_text("body"),
+    }
+    browser.close()
+
+print(json.dumps(data))
+'''
+
+
+def _playwright_python() -> str | None:
+    """A python interpreter that can import playwright, if one exists."""
+
+    candidates = [
+        Path.home() / "workspace" / "book2-venv" / "bin" / "python",
+        Path(sys.executable),
+    ]
+
+    for candidate in candidates:
+        if not candidate.exists():
+            continue
+        probe = subprocess.run(
+            [str(candidate), "-c", "import playwright"],
+            capture_output=True,
+            timeout=60,
+        )
+        if probe.returncode == 0:
+            return str(candidate)
+
+    return None
+
+
+def scenario_phases() -> list[str]:
+    failures = []
+
+    driver_python = _playwright_python()
+    if driver_python is None:
+        return ["no python with playwright available for the browser driver"]
+
+    port = 8791
+    server = subprocess.Popen(
+        [
+            PY,
+            "-c",
+            (
+                "import uvicorn, app.gui; "
+                f"uvicorn.run(app.gui.app, host='127.0.0.1', port={port}, "
+                "log_level='error')"
+            ),
+        ],
+        cwd=PROJECT_ROOT,
+        env=dict(os.environ),
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+
+    driver_path = (
+        Path(tempfile.mkdtemp(prefix="maca-phases-")) / "driver.py"
+    )
+    driver_path.write_text(_PHASES_DRIVER, encoding="utf-8")
+
+    try:
+        import time
+        import urllib.request
+
+        deadline = time.time() + 60
+        ready = False
+        while time.time() < deadline:
+            try:
+                with urllib.request.urlopen(
+                    f"http://127.0.0.1:{port}/api/status", timeout=2
+                ) as response:
+                    ready = response.status == 200
+                if ready:
+                    break
+            except Exception:
+                time.sleep(0.5)
+        if not ready:
+            return ["the GUI server did not come up on the test port"]
+
+        proc = subprocess.run(
+            [driver_python, str(driver_path), f"http://127.0.0.1:{port}/"],
+            capture_output=True,
+            text=True,
+            timeout=240,
+        )
+        if proc.returncode != 0:
+            return [
+                f"browser driver failed:\n{proc.stdout[-1000:]}\n{proc.stderr[-1500:]}"
+            ]
+
+        data = json.loads(proc.stdout.strip().splitlines()[-1])
+    finally:
+        server.terminate()
+        try:
+            server.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            server.kill()
+
+    chat = data.get("chat", "")
+    terminal = data.get("terminal", "")
+    body = data.get("body", "")
+
+    for word in ("Thinking", "Building", "Testing", "Done"):
+        if word not in chat:
+            failures.append(f"chat stream is missing the phase line {word!r}:\n{chat}")
+        if word not in terminal:
+            failures.append(f"terminal is missing {word!r}:\n{terminal}")
+    for banned in ("MODE:", "CHECKS:", "STATUS:"):
+        if banned in body:
+            failures.append(f"verbose tester text rendered in the page: {banned!r}")
+    if "Routed to" in chat or "plan created" in chat.lower():
+        failures.append(f"agent prose leaked into the chat stream:\n{chat}")
+    return failures
+
+
 SCENARIOS = {
     "web": scenario_web,
     "blocked": scenario_blocked,
@@ -1047,6 +1477,10 @@ SCENARIOS = {
     "question": scenario_question,
     "questionbuild": scenario_questionbuild,
     "preview": scenario_preview,
+    "editfollowup": scenario_editfollowup,
+    "freshstart": scenario_freshstart,
+    "nocomments": scenario_nocomments,
+    "phases": scenario_phases,
 }
 
 
@@ -1118,6 +1552,16 @@ def main() -> int:
         ("question", DEVELOPER_MARKER_PAYLOAD),
         ("questionbuild", QUESTIONBUILD_PAYLOAD),
         ("preview", None),
+        # Edit-mode scenarios: the follow-up scenario swaps its own
+        # payload between runs (see _install_dynamic_payload_factory);
+        # the env payload is its run-1 starting point. Fresh start
+        # replaces the populated workspace with the payload project.
+        # No-comments checks what the developer writes. Phases drives
+        # the served GUI in a real browser.
+        ("editfollowup", EDIT_V1_PAYLOAD),
+        ("freshstart", FRESHSTART_PAYLOAD),
+        ("nocomments", NOCOMMENTS_PAYLOAD),
+        ("phases", WEB_PAYLOAD),
     ):
         workspace = tempfile.mkdtemp(prefix=f"maca-{name}-")
         proc = _run_subprocess(
