@@ -113,7 +113,7 @@ html, body {
 
 /* ---------- editor ---------- */
 #editor-area { display: flex; flex-direction: column; min-width: 0; }
-#tabs { background: var(--bg-tab); display: flex; min-height: 35px; }
+#tabs { background: var(--bg-tab); display: flex; min-height: 35px; align-items: stretch; }
 .tab {
   background: var(--bg-active-tab);
   padding: 8px 16px;
@@ -121,7 +121,47 @@ html, body {
   color: var(--text);
   font-size: 12px;
 }
+#copy-button {
+  margin-left: auto;
+  align-self: center;
+  margin-right: 8px;
+  padding: 4px 14px;
+  background: #2a2d2e;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  color: var(--text);
+  font-family: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+#copy-button:hover:not(:disabled) { background: #37373d; }
+#copy-button:disabled { color: var(--text-dim); cursor: default; opacity: 0.55; }
+#copy-button.copied { color: var(--green); border-color: var(--green); }
 #editor { flex: 1; overflow: auto; background: var(--bg); }
+#code-view {
+  display: flex;
+  align-items: stretch;
+  min-height: 100%;
+  min-width: max-content;
+}
+#gutter {
+  position: sticky;
+  left: 0;
+  z-index: 1;
+  flex: none;
+  background: var(--bg);
+  border-right: 1px solid var(--border);
+  color: #6e7681;
+  text-align: right;
+  white-space: pre;
+  overflow: hidden;
+  padding: 12px 12px 12px 16px;
+  font-family: "Cascadia Code", Consolas, "Courier New", monospace;
+  font-size: 13px;
+  line-height: 1.55;
+  user-select: none;
+  -webkit-user-select: none;
+}
 #code {
   margin: 0;
   padding: 12px 16px;
@@ -129,13 +169,11 @@ html, body {
   font-size: 13px;
   line-height: 1.55;
   tab-size: 4;
+  flex: 1 1 auto;
 }
-/* simple syntax tinting */
-.tok-kw { color: #569cd6; }
-.tok-str { color: #ce9178; }
-.tok-com { color: #6a9955; font-style: italic; }
-.tok-num { color: #b5cea8; }
-.tok-dec { color: #dcdcaa; }
+/* highlight.js theme adjustments: let the app background show
+   through and drop the theme's own padding (ours above rules). */
+#code .hljs { background: transparent; padding: 0; }
 
 /* ---------- terminal ---------- */
 #terminal-panel { height: 190px; border-top: 1px solid var(--border); background: #1e1e1e; display: flex; flex-direction: column; }

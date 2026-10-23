@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Multi-Agent Coding Assistant</title>
+<link rel="stylesheet" href="/static/vendor/github-dark.css">
 <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
@@ -36,9 +37,15 @@
 
     <!-- CENTER: editor + terminal -->
     <main id="editor-area">
-      <div id="tabs"><div id="active-tab" class="tab">Welcome</div></div>
+      <div id="tabs">
+        <div id="active-tab" class="tab">Welcome</div>
+        <button id="copy-button" type="button" disabled>Copy</button>
+      </div>
       <div id="editor">
-        <pre id="code"><code id="code-content">// Select a file in the Explorer, or run the agents to generate code.</code></pre>
+        <div id="code-view">
+          <div id="gutter" aria-hidden="true"></div>
+          <pre id="code"><code id="code-content" class="hljs">// Select a file in the Explorer, or run the agents to generate code.</code></pre>
+        </div>
       </div>
       <div id="terminal-panel">
         <div class="panel-tabs"><span class="panel-tab active">Terminal</span><span id="terminal-meta"></span></div>
@@ -57,6 +64,7 @@
     </aside>
   </div>
 
+<script src="/static/vendor/highlight.min.js"></script>
 <script src="/static/app.js"></script>
 </body>
 </html>

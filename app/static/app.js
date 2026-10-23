@@ -6,6 +6,9 @@ const treeEl = $("#file-tree");
 const workspacePathEl = $("#workspace-path");
 const previewLinkEl = $("#preview-link");
 const codeEl = $("#code-content");
+const gutterEl = $("#gutter");
+const editorEl = $("#editor");
+const copyBtn = $("#copy-button");
 const tabEl = $("#active-tab");
 const terminalEl = $("#terminal");
 const terminalMetaEl = $("#terminal-meta");
@@ -72,29 +75,63 @@ async function refreshTree() {
   refreshPreviewLink();
 }
 
-function escapeHtml(text) {
-  return text
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;");
+/* Syntax highlighting via the vendored highlight.js (fully offline).
+   Language is picked from the file extension; unknown types fall
+   back to plain (escaped) text. */
+const LANGUAGE_BY_EXT = {
+  py: "python",
+  html: "xml",
+  htm: "xml",
+  css: "css",
+  js: "javascript",
+  mjs: "javascript",
+  json: "json",
+  md: "markdown",
+};
+
+function languageForPath(path) {
+  const match = /\.([A-Za-z0-9]+)$/.exec(path || "");
+  if (!match) return null;
+  return LANGUAGE_BY_EXT[match[1].toLowerCase()] || null;
 }
 
-/* Very small Python syntax tinting: comments, strings, keywords,
-   decorators, numbers. Good enough for a read-only viewer. */
-function highlightPython(src) {
-  const tokenRe =
-    /(#[^\n]*)|("""[\s\S]*?"""|'''[\s\S]*?'''|"(?:\\.|[^"\\\n])*"|'(?:\\.|[^'\\\n])*')|(@\w+)|\b(def|class|return|if|elif|else|for|while|import|from|as|try|except|finally|with|lambda|None|True|False|and|or|not|in|is|pass|raise|yield|async|await|global|nonlocal|assert|del|break|continue|print)\b|\b(\d+(?:\.\d+)?)\b/g;
-  let out = "";
-  let last = 0;
-  let m;
-  while ((m = tokenRe.exec(src)) !== null) {
-    out += escapeHtml(src.slice(last, m.index));
-    const cls = m[1] ? "tok-com" : m[2] ? "tok-str" : m[3] ? "tok-dec" : m[4] ? "tok-kw" : "tok-num";
-    out += `<span class="${cls}">${escapeHtml(m[0])}</span>`;
-    last = m.index + m[0].length;
+let currentFilePath = null;
+let currentFileContent = null;
+
+function renderGutter(content) {
+  if (!content) {
+    gutterEl.textContent = "";
+    return;
   }
-  out += escapeHtml(src.slice(last));
-  return out;
+  const lineCount = content.replace(/\n$/, "").split("\n").length;
+  const numbers = new Array(lineCount);
+  for (let i = 0; i < lineCount; i += 1) numbers[i] = String(i + 1);
+  gutterEl.textContent = numbers.join("\n");
+}
+
+function renderCode(path, content) {
+  currentFilePath = path;
+  currentFileContent = content;
+  tabEl.textContent = path.split("/").pop();
+  const language = languageForPath(path);
+  codeEl.className = "hljs" + (language ? " language-" + language : "");
+  if (
+    language &&
+    window.hljs &&
+    typeof window.hljs.highlight === "function" &&
+    window.hljs.getLanguage(language)
+  ) {
+    /* highlight.js escapes the source itself; the raw text is
+       never injected as HTML. */
+    codeEl.innerHTML = window.hljs.highlight(content, { language }).value;
+  } else {
+    /* Plain fallback: textContent can never be parsed as markup. */
+    codeEl.textContent = content;
+  }
+  renderGutter(content);
+  copyBtn.disabled = false;
+  editorEl.scrollTop = 0;
+  editorEl.scrollLeft = 0;
 }
 
 async function openFile(path, li) {
@@ -104,15 +141,63 @@ async function openFile(path, li) {
     const data = await res.json();
     document.querySelectorAll(".tree li.file.selected").forEach((el) => el.classList.remove("selected"));
     if (li) li.classList.add("selected");
-    tabEl.textContent = path.split("/").pop();
-    codeEl.innerHTML = path.endsWith(".py")
-      ? highlightPython(data.content)
-      : escapeHtml(data.content);
-    $("#editor").scrollTop = 0;
+    renderCode(path, data.content);
   } catch (err) {
+    currentFilePath = null;
+    currentFileContent = null;
+    codeEl.className = "hljs";
     codeEl.textContent = "// Could not open file: " + err.message;
+    gutterEl.textContent = "";
+    copyBtn.disabled = true;
   }
 }
+
+/* ------------------------------------------------------------------ */
+/* copy the current file                                               */
+/* ------------------------------------------------------------------ */
+
+let copyResetTimer = null;
+
+function flashCopyLabel(text, ok) {
+  copyBtn.textContent = text;
+  copyBtn.classList.toggle("copied", ok);
+  if (copyResetTimer) clearTimeout(copyResetTimer);
+  copyResetTimer = setTimeout(() => {
+    copyBtn.textContent = "Copy";
+    copyBtn.classList.remove("copied");
+  }, 1200);
+}
+
+copyBtn.addEventListener("click", async () => {
+  if (currentFileContent === null) return;
+  /* Always the RAW file text, never the highlighted markup. */
+  let ok = false;
+  if (navigator.clipboard && window.isSecureContext) {
+    try {
+      await navigator.clipboard.writeText(currentFileContent);
+      ok = true;
+    } catch {
+      ok = false;
+    }
+  }
+  if (!ok) {
+    /* Fallback for non-secure contexts (plain http on localhost). */
+    const ta = document.createElement("textarea");
+    ta.value = currentFileContent;
+    ta.setAttribute("readonly", "");
+    ta.style.position = "fixed";
+    ta.style.opacity = "0";
+    document.body.appendChild(ta);
+    ta.select();
+    try {
+      ok = document.execCommand("copy");
+    } catch {
+      ok = false;
+    }
+    document.body.removeChild(ta);
+  }
+  flashCopyLabel(ok ? "Copied" : "Copy failed", ok);
+});
 
 /* ------------------------------------------------------------------ */
 /* chat + terminal                                                     */
