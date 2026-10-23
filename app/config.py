@@ -95,6 +95,12 @@ _FAKE_RESPONSES = {
         "2) Run it to verify it executes."
     ],
     "debugger": ["The fake model does not apply fixes."],
+    "answerer": [
+        "To run this project, open index.html in a web browser: "
+        "double-click index.html in the generated_project folder. "
+        "No server or install is needed; the browser runs the HTML, "
+        "CSS and JavaScript directly."
+    ],
     "generic": ["ok"],
 }
 

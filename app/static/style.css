@@ -78,6 +78,20 @@ html, body {
   color: var(--text);
 }
 .workspace-path { color: var(--text-dim); font-size: 11px; margin-bottom: 6px; word-break: break-all; }
+.preview-link {
+  display: inline-block;
+  margin: 0 0 8px 0;
+  padding: 3px 10px;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  background: #2a2d2e;
+  color: var(--accent);
+  font-size: 12px;
+  text-decoration: none;
+}
+.preview-link:hover { background: #37373d; text-decoration: none; }
+.preview-link[hidden] { display: none; }
+.msg a.preview-url { color: var(--accent); word-break: break-all; }
 .tree ul { list-style: none; margin: 0; padding-left: 14px; }
 .tree > ul { padding-left: 0; }
 .tree li { padding: 2px 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; border-radius: 3px; }

@@ -9,6 +9,7 @@ from app.agents.developer import developer_agent
 from app.agents.tester import tester_agent
 from app.agents.debugger import debugger_agent
 from app.agents.workspace_action import workspace_action_agent
+from app.agents.answerer import answerer_agent
 
 
 graph = StateGraph(AgentState)
@@ -20,6 +21,7 @@ graph.add_node("developer", developer_agent)
 graph.add_node("tester", tester_agent)
 graph.add_node("debugger", debugger_agent)
 graph.add_node("workspace_action", workspace_action_agent)
+graph.add_node("answerer", answerer_agent)
 
 
 graph.set_entry_point("supervisor")
@@ -94,7 +96,9 @@ graph.add_conditional_edges(
         "tester": "tester",
         # Pure delete requests are performed as a direct operation
         # on the workspace, never as code generation.
-        "workspace_action": "workspace_action"
+        "workspace_action": "workspace_action",
+        # Questions are answered, never acted on.
+        "answerer": "answerer"
     }
 )
 
@@ -102,6 +106,13 @@ graph.add_conditional_edges(
 # A direct action is the whole run: its outcome is the result.
 graph.add_edge(
     "workspace_action",
+    END
+)
+
+
+# An answer is likewise the whole run: nothing is built or tested.
+graph.add_edge(
+    "answerer",
     END
 )
 

@@ -130,6 +130,22 @@ def _pick_workspace_entrypoint(files: list[str]) -> str | None:
     return None
 
 
+def scan_workspace_files() -> list[str]:
+    """Public wrapper: the project files currently in the workspace.
+
+    Shared with the answerer and the GUI preview, which need the same
+    view of the existing project as a run/test-only test.
+    """
+
+    return _scan_workspace()
+
+
+def pick_workspace_entrypoint(files: list[str]) -> str | None:
+    """Public wrapper: the entrypoint of an existing workspace project."""
+
+    return _pick_workspace_entrypoint(files)
+
+
 def _scan_for_destructive_ops(files: list[str]) -> list[str]:
     """Return one 'file: pattern' string per destructive operation found."""
 

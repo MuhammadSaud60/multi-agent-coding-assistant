@@ -23,10 +23,12 @@ from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
+from app.agents.answerer import answer_question
+from app.agents.tester import pick_workspace_entrypoint, scan_workspace_files
 from app.config import get_workspace_root
 from app.direct_actions import handle_delete_request
 from app.graph.workflow import workflow
-from app.intent import is_test_only_request
+from app.intent import is_question, is_test_only_request
 from app.main import build_initial_state
 from app.tools.workspace_tools import clear_workspace
 
@@ -104,11 +106,60 @@ class RunManager:
         return True
 
     def _run(self, user_request: str) -> None:
+        # The previous run's result is context for answering a
+        # question ("how to run it?" right after a build), so it is
+        # captured before the per-run state is reset below.
+        previous_test_result = ""
+        if self.last_summary:
+            previous_test_result = self.last_summary.get("test_result", "")
+
         self.last_request = user_request
         self.last_summary = None
         self.agent_status = {name: "idle" for name in AGENT_NAMES}
         self.current_agent = None
         self.emit({"type": "run_started", "request": user_request})
+
+        # A question is not a command: answer it from the current
+        # workspace state and present the answer as the run's
+        # result. Checked FIRST, before the delete and run/test
+        # paths. No agents run, nothing is generated, and the
+        # workspace is NOT cleared.
+        if is_question(user_request):
+            answer = answer_question(user_request, previous_test_result)
+            self.agent_status["supervisor"] = "done"
+            self.emit(
+                {
+                    "type": "log",
+                    "message": (
+                        "Question: answered directly "
+                        "(no agents run, workspace untouched)."
+                    ),
+                }
+            )
+            self.emit(
+                {
+                    "type": "agent",
+                    "agent": "supervisor",
+                    "message": answer,
+                    "test_result": "",
+                    "plan": "",
+                    "files_created": [],
+                }
+            )
+            files = scan_workspace_files()
+            summary = {
+                "plan": "",
+                "files_created": [],
+                "entrypoint": pick_workspace_entrypoint(files) or "",
+                "test_result": answer,
+                "final_response": answer,
+            }
+            self.last_summary = summary
+            self.emit({"type": "run_finished", "summary": summary})
+            self.current_agent = None
+            self.running = False
+            self.emit({"type": "status", "status": self.status()})
+            return
 
         # A pure delete request is an operation on the workspace,
         # not a build: perform it directly and present the outcome
@@ -222,6 +273,20 @@ class RunManager:
                             else [],
                         }
                     )
+            # A web project can be SEEN, not just validated: point
+            # at its live preview (the workspace is served under
+            # /preview/, see the mount below).
+            entrypoint = summary.get("entrypoint", "")
+            if entrypoint.lower().endswith((".html", ".htm")):
+                preview_url = f"http://127.0.0.1:8765/preview/{entrypoint}"
+                summary["preview_url"] = preview_url
+                self.emit(
+                    {
+                        "type": "preview",
+                        "url": preview_url,
+                        "entrypoint": entrypoint,
+                    }
+                )
             self.last_summary = summary
             self.emit({"type": "run_finished", "summary": summary})
         except Exception as exc:  # surface, never swallow
@@ -308,6 +373,25 @@ def api_status() -> dict:
     return manager.status()
 
 
+@app.get("/api/preview-info")
+def api_preview_info() -> dict:
+    """Whether the workspace currently holds a previewable web page.
+
+    Drives the persistent "Open preview" link in the Explorer: it is
+    offered exactly when the workspace project has an HTML
+    entrypoint, which is what /preview/ can serve.
+    """
+    files = scan_workspace_files()
+    entrypoint = pick_workspace_entrypoint(files)
+    if entrypoint and entrypoint.lower().endswith((".html", ".htm")):
+        return {
+            "available": True,
+            "entrypoint": entrypoint,
+            "url": f"/preview/{entrypoint}",
+        }
+    return {"available": False, "entrypoint": "", "url": ""}
+
+
 @app.get("/api/events")
 async def api_events() -> StreamingResponse:
     subscriber = manager.subscribe()
@@ -340,6 +424,19 @@ def index() -> FileResponse:
 
 
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+
+# The generated workspace, served read-only so a web project can be
+# previewed in the browser at /preview/<entrypoint>. StaticFiles is
+# rooted at the workspace and normalises every path it serves, so a
+# request can never escape the workspace and reach the application's
+# own source (/../ attempts 404). The directory must exist before
+# the mount is created.
+WORKSPACE.mkdir(parents=True, exist_ok=True)
+app.mount(
+    "/preview",
+    StaticFiles(directory=WORKSPACE, html=True),
+    name="preview",
+)
 
 
 def main() -> None:

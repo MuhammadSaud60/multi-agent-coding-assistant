@@ -85,6 +85,24 @@ Scenarios:
  18. deletecli
              The same named delete driven through the CLI entry
              point as a subprocess.
+ 19. question
+             "how to run it?" with an existing website in the
+             workspace: the request is a QUESTION, not a run order.
+             It must be answered (the answer explains opening
+             index.html in a browser), with no tester run, no files
+             changed, no workspace clearing/backup, and the
+             developer never running. Driven through the graph and
+             through the GUI RunManager.
+ 20. questionbuild
+             A normal build request still builds, while "how do I
+             create a login page?" (a question ABOUT building) gets
+             an answer and builds nothing.
+ 21. preview
+             The GUI serves the workspace under /preview/: the
+             index page and its stylesheet come back 200, a missing
+             file 404s, and path-traversal attempts never return
+             the application's own source. /api/preview-info points
+             at the page.
 
 Note on scenario 2 (blocked): its request used to be the literal
 "delete all files", which is now a direct workspace action (scenario
@@ -235,6 +253,15 @@ DEVELOPER_MARKER_PAYLOAD = {
         },
     ],
     "entrypoint": "developer_was_here.py",
+}
+
+# Payload for scenario questionbuild's build half: a distinctive
+# greeting so the scenario can prove the build really ran.
+QUESTIONBUILD_PAYLOAD = {
+    "files": [
+        {"path": "main.py", "content": "print('built by the agents')\n"},
+    ],
+    "entrypoint": "main.py",
 }
 
 # The pre-existing Python project for scenario runexisting.
@@ -787,6 +814,187 @@ def scenario_deleteone() -> list[str]:
     return failures
 
 
+def scenario_question() -> list[str]:
+    from app.graph.workflow import workflow
+    from app.intent import is_delete_request, is_question, is_test_only_request
+    from app.main import build_initial_state
+
+    workspace = Path(os.environ["MACA_WORKSPACE"])
+    _populate(
+        workspace,
+        {
+            "index.html": EXISTING_INDEX_HTML,
+            "styles.css": "body { font-family: sans-serif; }\n",
+            "script.js": "console.log('existing site');\n",
+        },
+    )
+    before = _snapshot(workspace)
+
+    failures = []
+    # Classification: questions are classified before commands, so
+    # the "run" inside the question matches nothing.
+    if not is_question("how to run it?"):
+        failures.append("'how to run it?' not classified as a question")
+    if is_test_only_request("how to run it?"):
+        failures.append("'how to run it?' still classified as test-only")
+    if is_delete_request("how to run it?"):
+        failures.append("'how to run it?' classified as a delete request")
+
+    result = workflow.invoke(build_initial_state("how to run it?"))
+    answer = result.get("final_response", "")
+
+    if "STATUS:" in answer:
+        failures.append(
+            f"a tester result was produced for a question:\n{answer}"
+        )
+    lowered = answer.lower()
+    if "open" not in lowered or "index.html" not in lowered or "browser" not in lowered:
+        failures.append(
+            "answer does not explain opening index.html in a browser:"
+            f"\n{answer}"
+        )
+    if result.get("files_created"):
+        failures.append(
+            f"files were generated for a question: {result.get('files_created')}"
+        )
+    if (workspace / "developer_was_here.py").exists():
+        failures.append("the developer ran for a question")
+    if _snapshot(workspace) != before:
+        failures.append("workspace files changed for a question")
+    if _backup_root(workspace).exists():
+        failures.append("a backup was created for a question (workspace cleared?)")
+
+    # The GUI route must answer too, without touching the workspace.
+    from app.gui import RunManager
+
+    manager = RunManager()
+    manager._run("how to run it?")
+    summary = manager.last_summary or {}
+    gui_answer = summary.get("final_response", "")
+    gui_lowered = gui_answer.lower()
+    if "index.html" not in gui_lowered or "browser" not in gui_lowered:
+        failures.append(
+            f"GUI answer does not explain the how-to-run facts:\n{gui_answer}"
+        )
+    if _snapshot(workspace) != before:
+        failures.append("workspace files changed by the GUI question run")
+    if _backup_root(workspace).exists():
+        failures.append("a backup was created by the GUI question run")
+    return failures
+
+
+def scenario_questionbuild() -> list[str]:
+    from app.graph.workflow import workflow
+    from app.intent import is_question
+    from app.main import build_initial_state
+
+    workspace = Path(os.environ["MACA_WORKSPACE"])
+
+    failures = []
+    if is_question("create a login page"):
+        failures.append("a plain build order was classified as a question")
+    if not is_question("how do I create a login page?"):
+        failures.append(
+            "'how do I create a login page?' not classified as a question"
+        )
+
+    # A normal build request still builds (guard against the
+    # question detector over-blocking real orders).
+    result = workflow.invoke(
+        build_initial_state("create a python script that prints a greeting")
+    )
+    test_result = result.get("test_result", "")
+    if not (workspace / "main.py").is_file():
+        failures.append("build request did not create main.py")
+    if not test_result.startswith("STATUS: PASSED"):
+        failures.append(f"build request did not pass:\n{test_result}")
+    if "built by the agents" not in test_result:
+        failures.append("build request did not run the built script")
+
+    # A question ABOUT building gets an answer, not a build.
+    before = _snapshot(workspace)
+    result = workflow.invoke(build_initial_state("how do I create a login page?"))
+    answer = result.get("final_response", "")
+    if not answer.strip():
+        failures.append("question about building got an empty answer")
+    if "STATUS:" in answer:
+        failures.append(
+            f"question about building produced a tester result:\n{answer}"
+        )
+    if _snapshot(workspace) != before:
+        failures.append("a question about building changed the workspace")
+    return failures
+
+
+def scenario_preview() -> list[str]:
+    from fastapi.testclient import TestClient
+
+    import app.gui as gui
+
+    workspace = Path(os.environ["MACA_WORKSPACE"])
+    _populate(
+        workspace,
+        {
+            "index.html": (
+                "<!DOCTYPE html>\n"
+                "<html><head>"
+                '<link rel="stylesheet" href="style.css">'
+                "</head><body><h1>Preview marker 12345</h1>"
+                "</body></html>\n"
+            ),
+            "style.css": "h1 { color: rgb(1, 2, 3); }\n",
+        },
+    )
+
+    failures = []
+    client = TestClient(gui.app)
+
+    response = client.get("/preview/index.html")
+    if response.status_code != 200:
+        failures.append(f"GET /preview/index.html -> {response.status_code}")
+    elif "Preview marker 12345" not in response.text:
+        failures.append("preview did not serve the workspace index.html")
+
+    response = client.get("/preview/style.css")
+    if response.status_code != 200:
+        failures.append(f"GET /preview/style.css -> {response.status_code}")
+    elif "color: rgb(1, 2, 3)" not in response.text:
+        failures.append("preview did not serve the workspace style.css")
+
+    # Traversal attempts must never reach the application's source.
+    for attempt in (
+        "/preview/../app/gui.py",
+        "/preview/%2e%2e/app/gui.py",
+        "/preview/..%2fapp%2fgui.py",
+        "/preview/%2e%2e%2fapp%2fgui.py",
+    ):
+        response = client.get(attempt)
+        if response.status_code == 200 and "RunManager" in response.text:
+            failures.append(
+                f"traversal attempt leaked application source: {attempt}"
+            )
+        if response.status_code not in (400, 404):
+            failures.append(
+                f"traversal attempt {attempt} -> {response.status_code}, "
+                "expected 400 or 404"
+            )
+
+    response = client.get("/preview/no-such-file.txt")
+    if response.status_code != 404:
+        failures.append(
+            f"missing preview file -> {response.status_code}, expected 404"
+        )
+
+    response = client.get("/api/preview-info")
+    if response.status_code != 200:
+        failures.append(f"GET /api/preview-info -> {response.status_code}")
+    else:
+        info = response.json()
+        if not info.get("available") or info.get("url") != "/preview/index.html":
+            failures.append(f"preview-info does not point at index.html: {info}")
+    return failures
+
+
 def scenario_deletegui() -> list[str]:
     from app.gui import RunManager
 
@@ -836,6 +1044,9 @@ SCENARIOS = {
     "deletevague": scenario_deletevague,
     "deleteone": scenario_deleteone,
     "deletegui": scenario_deletegui,
+    "question": scenario_question,
+    "questionbuild": scenario_questionbuild,
+    "preview": scenario_preview,
 }
 
 
@@ -900,6 +1111,13 @@ def main() -> int:
         ("deletevague", DEVELOPER_MARKER_PAYLOAD),
         ("deleteone", DEVELOPER_MARKER_PAYLOAD),
         ("deletegui", DEVELOPER_MARKER_PAYLOAD),
+        # Question scenarios: the marker payload exposes any
+        # developer run for the "how to run it?" question; the
+        # question-about-building scenario uses a real build payload
+        # for its build half. Preview needs no model at all.
+        ("question", DEVELOPER_MARKER_PAYLOAD),
+        ("questionbuild", QUESTIONBUILD_PAYLOAD),
+        ("preview", None),
     ):
         workspace = tempfile.mkdtemp(prefix=f"maca-{name}-")
         proc = _run_subprocess(

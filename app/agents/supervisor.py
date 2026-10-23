@@ -1,5 +1,5 @@
 from app.config import get_llm
-from app.intent import is_delete_request, is_test_only_request
+from app.intent import is_delete_request, is_question, is_test_only_request
 from app.models.state import AgentState
 from app.text_utils import to_text
 
@@ -9,6 +9,18 @@ llm = get_llm("supervisor")
 def supervisor_agent(state: AgentState):
 
     request = state["user_request"]
+
+    # A question ("how to run it?", "how do I create a login
+    # page?") is not a command at all. It is classified FIRST, so
+    # the verbs inside it ("run", "create") can never route it to
+    # the tester as a run order or to the developer as a build
+    # order: it goes to the answerer and gets an answer.
+    if is_question(request):
+        print("[SUPERVISOR] Question -> answerer")
+        return {
+            "next_agent": "answerer",
+            "test_only": False,
+        }
 
     # A pure delete request ("delete the existing file") is an
     # operation on the workspace, not a build. The entry points

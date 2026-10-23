@@ -4,6 +4,7 @@ const $ = (sel) => document.querySelector(sel);
 
 const treeEl = $("#file-tree");
 const workspacePathEl = $("#workspace-path");
+const previewLinkEl = $("#preview-link");
 const codeEl = $("#code-content");
 const tabEl = $("#active-tab");
 const terminalEl = $("#terminal");
@@ -40,6 +41,21 @@ function renderTree(nodes, container) {
   container.appendChild(ul);
 }
 
+async function refreshPreviewLink() {
+  try {
+    const res = await fetch("/api/preview-info");
+    const info = await res.json();
+    if (info.available) {
+      previewLinkEl.href = info.url;
+      previewLinkEl.hidden = false;
+    } else {
+      previewLinkEl.hidden = true;
+    }
+  } catch {
+    previewLinkEl.hidden = true;
+  }
+}
+
 async function refreshTree() {
   try {
     const res = await fetch("/api/files");
@@ -53,6 +69,7 @@ async function refreshTree() {
   } catch (err) {
     treeEl.textContent = "Could not load file tree: " + err.message;
   }
+  refreshPreviewLink();
 }
 
 function escapeHtml(text) {
@@ -116,6 +133,24 @@ function addMessage(kind, who, text, preText) {
     pre.textContent = preText;
     div.appendChild(pre);
   }
+  chatLogEl.appendChild(div);
+  chatLogEl.scrollTop = chatLogEl.scrollHeight;
+}
+
+function addLinkMessage(kind, who, label, url) {
+  const div = document.createElement("div");
+  div.className = "msg " + kind;
+  const whoEl = document.createElement("span");
+  whoEl.className = "who";
+  whoEl.textContent = who;
+  div.appendChild(whoEl);
+  const a = document.createElement("a");
+  a.href = url;
+  a.target = "_blank";
+  a.rel = "noopener";
+  a.textContent = label;
+  a.className = "preview-url";
+  div.appendChild(a);
   chatLogEl.appendChild(div);
   chatLogEl.scrollTop = chatLogEl.scrollHeight;
 }
@@ -205,6 +240,10 @@ function handleEvent(event) {
       }
       break;
     }
+    case "preview":
+      addLinkMessage("system", "Preview", "Preview: " + event.url, event.url);
+      refreshPreviewLink();
+      break;
     case "run_finished": {
       const s = event.summary || {};
       const passed = (s.test_result || "").startsWith("STATUS: PASSED");

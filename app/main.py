@@ -11,10 +11,11 @@ For the graphical interface see:  python -m app.gui
 import argparse
 import sys
 
+from app.agents.answerer import answer_question
 from app.config import get_workspace_root
 from app.direct_actions import handle_delete_request
 from app.graph.workflow import workflow
-from app.intent import is_test_only_request
+from app.intent import is_question, is_test_only_request
 from app.tools.workspace_tools import clear_workspace
 
 
@@ -67,6 +68,22 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     print(f"\n[MAIN] Workspace: {get_workspace_root()}")
+
+    # A question is not a command: answer it from the current
+    # workspace state and report the answer as the run's result.
+    # Checked FIRST, before the delete and run/test paths, so the
+    # verbs inside a question never trigger an action. No agents
+    # run, nothing is generated, the workspace is not cleared.
+    if is_question(user_request):
+        answer = answer_question(user_request)
+        print(
+            "[MAIN] Question: answered directly "
+            "(no agents run, workspace untouched)."
+        )
+        print(f"[MAIN] Request: {user_request}")
+        print("\n================ RESULT ================")
+        print(answer)
+        return 0
 
     # A pure delete request is an operation on the workspace, not a
     # build: perform it directly and report the outcome as the run's

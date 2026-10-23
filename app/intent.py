@@ -16,6 +16,15 @@ while the file the user meant stayed exactly where it was.
 parse_delete_request() recognises them so the entry points (and the
 supervisor, as a safety net) can perform the deletion directly.
 
+And some requests are neither builds nor operations: they are
+QUESTIONS ("how to run it?", "how do I create a login page?"). A
+question must be answered, never acted on: it must not trigger the
+test-only path (the original "how to run it?" bug: classified as a
+run command, it pointlessly re-validated the project), the delete
+path, or a build. is_question() therefore runs FIRST in every
+detector below: a question is classified before any command verb
+inside it gets a chance to match.
+
 Detection is deliberately rule-based rather than model-based: the
 entry points (CLI and GUI) must know the answer BEFORE the graph
 starts, because they decide whether the workspace may be cleared,
@@ -79,14 +88,77 @@ _EXISTING_REFERENCES = {
 }
 
 
+# ----------------------------------------------------------------------
+# Questions
+# ----------------------------------------------------------------------
+
+# First words that make a request a question rather than a command.
+# "how do I create a login page?" asks for an explanation; treating
+# it as a build order (or "how to run it?" as a run order) is the bug
+# this detector exists to prevent.
+_QUESTION_OPENERS = {
+    "how",
+    "what",
+    "why",
+    "when",
+    "where",
+    "which",
+    "who",
+    "can",
+    "could",
+    "should",
+    "do",
+    "does",
+    "is",
+    "are",
+    "explain",
+}
+
+# Multi-word question openers that are not single command words.
+_QUESTION_PHRASES = ("tell me", "help me understand")
+
+
+def is_question(request) -> bool:
+    """True when the request asks a question instead of giving an order.
+
+    A trailing "?" always counts, as does an opener like "how",
+    "what", "why" or "can you explain". Classified BEFORE every
+    command detector, so the verbs inside a question ("run" in "how
+    to run it?", "create" in "how do I create a login page?") never
+    turn it into an action.
+    """
+
+    text = to_text(request).strip().lower()
+
+    if not text:
+        return False
+
+    if text.endswith("?"):
+        return True
+
+    words = re.findall(r"[a-z']+", text)
+
+    if not words:
+        return False
+
+    if words[0] in _QUESTION_OPENERS:
+        return True
+
+    return any(text.startswith(phrase) for phrase in _QUESTION_PHRASES)
+
+
 def is_test_only_request(request) -> bool:
     """True when the request only asks to run/test the existing project.
 
     Conservative on purpose: a misfire here would skip a build the
     user actually asked for, so a run verb AND a reference to existing
     work (or a bare run command like "run it") are both required, and
-    any build verb disqualifies the request.
+    any build verb disqualifies the request. A question is never a
+    run command ("how to run it?" asks HOW, it does not order a run).
     """
+
+    if is_question(request):
+        return False
 
     words = re.findall(r"[a-z']+", to_text(request).lower())
 
@@ -168,8 +240,13 @@ def parse_delete_request(request) -> DeleteIntent | None:
     Conservative in the same way as is_test_only_request: a delete
     verb is required, and any other build verb disqualifies the
     request, so a build that happens to mention deleting something
-    is never hijacked into a direct file operation.
+    is never hijacked into a direct file operation. A question is
+    never a delete order either ("can I delete this file?" asks;
+    it does not command).
     """
+
+    if is_question(request):
+        return None
 
     text = to_text(request).lower()
     words = re.findall(r"[a-z']+", text)
